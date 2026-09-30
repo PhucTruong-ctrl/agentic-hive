@@ -6,7 +6,9 @@ A persistent NixOS/Unix habitat for coding-agent sessions. See `SPEC.md`.
 bin/hive               Hive Core CLI (Room, claims, cursors, knowledge search)
 bin/hive-hook          harness adapter: `hive-hook claude|codex <event>` (SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd)
 bin/hive-launch        tmux launcher: one session per member, runs as the `hive` user
-bin/hive-dash          read-only Beekeeper dashboard (SPEC §18): members, claims, Room, host
+bin/hive-dash          read-only terminal dashboard (SPEC §18): members, claims, Room, host
+bin/hive-web           the same dashboard over HTTP (systemd service hive-web, port 80, Tailscale only)
+share/dashboard.html   the page hive-web serves
 share/member-instruction.md   the §13 instruction, appended to Claude's system prompt
 nix/module.nix         NixOS module (the "tree")
 nix/package.nix        Hive Core package
@@ -39,6 +41,7 @@ hive-launch --list
 sudo -u hive -i tmux attach -t hive-claude-opus-game
 hive observe                                                    # read-only view
 hive-dash                                                       # live dashboard (q quits); --once for a snapshot
+# web dashboard: http://<tailscale-ip>/  (services.agentic-hive.web.{enable,port,openFirewallOn})
 ```
 
 Everything is plain files under `/srv/hive`; `cat ROOM.md` always works.

@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hive</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1c1a; --muted: #6f6b63; --line: #e4e1da;
+    --accent: #b7791f; --working: #2f855a; --idle: #b7791f; --dead: #c53030; --never: #9a958c;
+    --chip: #f0ede6; --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141312; --panel: #1c1b19; --ink: #ece9e2; --muted: #9a958c; --line: #2c2a27;
+      --accent: #e0a43a; --working: #56c28a; --idle: #e0a43a; --dead: #f07167; --never: #6f6b63;
+      --chip: #262421; color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; margin-bottom: 18px; }
+  h1 { margin: 0; font-size: 20px; letter-spacing: .02em; }
+  h1 .hex { color: var(--accent); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                background: var(--working); margin-right: 6px; vertical-align: 1px; }
+  .stale .status-dot { background: var(--dead); }
+  .stale-msg { color: var(--dead); display: none; }
+  .stale .stale-msg { display: inline; }
+
+  .host { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .bar { height: 4px; background: var(--chip); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
+  section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  section h2 .n { color: var(--ink); }
+  .empty { color: var(--muted); font-style: italic; }
+
+  .members { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .m { border: 1px solid var(--line); border-left: 4px solid var(--never); border-radius: 8px; padding: 10px 12px; }
+  .m.working { border-left-color: var(--working); }
+  .m.idle { border-left-color: var(--idle); }
+  .m.dead { border-left-color: var(--dead); }
+  .m .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .m .name { font-weight: 600; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; }
+  .working .badge { color: var(--working); } .idle .badge { color: var(--idle); }
+  .dead .badge { color: var(--dead); } .never .badge { color: var(--never); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin-top: 8px; font-size: 12.5px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .unseen { color: var(--accent); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 6px 4px; border-top: 1px solid var(--line); vertical-align: top; }
+  tr:first-child td { border-top: 0; }
+  td.res { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  td.dim, .dim { color: var(--muted); white-space: nowrap; }
+
+  .room { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow-y: auto; }
+  .e { border-top: 1px solid var(--line); padding-top: 10px; }
+  .e:first-child { border-top: 0; padding-top: 0; }
+  .e .h { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; flex-wrap: wrap; }
+  .e .gen { font-family: var(--mono); color: var(--muted); }
+  .e .who { font-weight: 600; font-family: var(--mono); }
+  .e .when { color: var(--muted); margin-left: auto; }
+  .e .body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
+  .e .body code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+  .e.new { animation: flash 2.5s ease-out; }
+  @keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
+
+  .commit { font-size: 12.5px; padding: 5px 0; border-top: 1px solid var(--line); }
+  .commit:first-child { border-top: 0; }
+  .commit .h { font-family: var(--mono); color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <header>
+    <h1><span class="hex">⬡</span> Hive</h1>
+    <span class="meta"><span class="status-dot"></span><span id="host-name">…</span>
+      · room generation <b id="gen">–</b> · updated <span id="updated">–</span>
+      <span class="stale-msg">· connection lost, retrying</span></span>
+  </header>
+
+  <div class="host">
+    <div class="stat"><div class="k">CPU</div><div class="v" id="cpu">–</div><div class="bar"><i id="cpu-bar"></i></div></div>
+    <div class="stat"><div class="k">Memory</div><div class="v" id="mem">–</div><div class="bar"><i id="mem-bar"></i></div></div>
+    <div class="stat"><div class="k">Disk (hive)</div><div class="v" id="disk">–</div><div class="bar"><i id="disk-bar"></i></div></div>
+    <div class="stat"><div class="k">Load</div><div class="v" id="load">–</div><div class="bar"><i id="load-bar"></i></div></div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <section>
+        <h2>Members <span class="n" id="m-count"></span></h2>
+        <div class="members" id="members"></div>
+      </section>
+      <section>
+        <h2>Claims <span class="n" id="c-count"></span></h2>
+        <div id="claims"></div>
+      </section>
+      <section>
+        <h2>Recent commits</h2>
+        <div id="git"></div>
+      </section>
+    </div>
+    <div>
+      <section>
+        <h2>Room <span class="n" id="r-count"></span></h2>
+        <div class="room" id="room"></div>
+      </section>
+    </div>
+  </div>
+  <footer>Read-only. Hands are SSH, tmux and git; this page only watches. Refreshes every 3 s.</footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const inlineCode = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>");
+const gib = b => (b / 1073741824).toFixed(1);
+function ago(iso) {
+  if (!iso) return "–";
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.round(s) + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+const bar = (id, pct) => { $(id).style.width = Math.max(0, Math.min(100, pct)) + "%"; };
+
+let lastGen = null;
+
+function render(d) {
+  const h = d.host;
+  $("host-name").textContent = h.hostname + " · " + d.hive_root;
+  $("gen").textContent = d.generation;
+  $("updated").textContent = new Date(d.now).toLocaleTimeString();
+  document.title = `Hive · ${d.members.filter(m => m.state === "working").length} working · gen ${d.generation}`;
+
+  $("cpu").textContent = h.cpu_percent == null ? "–" : h.cpu_percent + "%"; bar("cpu-bar", h.cpu_percent || 0);
+  $("mem").textContent = `${gib(h.mem_used)} / ${gib(h.mem_total)} GiB`; bar("mem-bar", 100 * h.mem_used / h.mem_total);
+  $("disk").textContent = `${gib(h.disk_used)} / ${gib(h.disk_total)} GiB`; bar("disk-bar", 100 * h.disk_used / h.disk_total);
+  $("load").textContent = h.load.map(x => x.toFixed(2)).join(" "); bar("load-bar", 100 * h.load[0] / h.cpus);
+
+  const order = {working: 0, idle: 1, dead: 2, never: 3};
+  const ms = [...d.members].sort((a, b) => order[a.state] - order[b.state] || a.member.localeCompare(b.member));
+  $("m-count").textContent = ms.length ? `· ${ms.filter(m => m.state === "working" || m.state === "idle").length} alive / ${ms.length}` : "";
+  $("members").innerHTML = ms.length ? ms.map(m => `
+    <div class="m ${m.state}">
+      <div class="top"><span class="name">${esc(m.member)}</span><span class="badge">${m.state}</span></div>
+      <dl class="kv">
+        <dt>harness</dt><dd>${esc(m.harness || "–")}${m.pid ? " · pid " + esc(m.pid) : ""}</dd>
+        <dt>activity</dt><dd>${ago(m.last_activity)}${m.last_tool ? " · " + esc(m.last_tool) : ""}</dd>
+        <dt>worktree</dt><dd>${esc(m.cwd_short || "–")}</dd>
+        <dt>branch</dt><dd>${esc(m.git_branch || "–")}</dd>
+        <dt>room</dt><dd>${m.undelivered ? `<span class="unseen">${m.undelivered} not yet delivered</span>` : "up to date"}</dd>
+        ${m.notes.length ? `<dt>notes</dt><dd>${m.notes.map(esc).join(", ")}</dd>` : ""}
+      </dl>
+    </div>`).join("") : `<div class="empty">No members yet — start one with <code>hive-launch &lt;member&gt;</code>.</div>`;
+
+  $("c-count").textContent = d.claims.length ? "· " + d.claims.length : "";
+  $("claims").innerHTML = d.claims.length ? `<table>${d.claims.map(c => `
+    <tr><td class="dim">${esc(c.owner)}</td><td class="res">${esc(c.resource)}</td><td class="dim">${ago(c.created_at)}</td></tr>`).join("")}</table>`
+    : `<div class="empty">No active claims.</div>`;
+
+  $("git").innerHTML = d.git.length ? d.git.map(c => `
+    <div class="commit"><span class="h">${esc(c.hash)}</span> ${esc(c.subject)}
+      <span class="dim">· ${esc(c.author)} · ${ago(c.date)}${c.refs ? " · " + esc(c.refs) : ""}</span></div>`).join("")
+    : `<div class="empty">No live members in a git worktree.</div>`;
+
+  $("r-count").textContent = d.room.length ? `· last ${d.room.length}` : "";
+  const room = [...d.room].reverse();
+  $("room").innerHTML = room.length ? room.map(e => `
+    <div class="e${lastGen !== null && e.gen > lastGen ? " new" : ""}">
+      <div class="h"><span class="gen">[${e.gen}]</span><span class="who">${esc(e.member)}</span>
+        <span class="when" title="${esc(e.ts)}">${ago(e.ts)}</span></div>
+      <div class="body">${inlineCode(e.body)}</div>
+    </div>`).join("") : `<div class="empty">The Room is quiet.</div>`;
+  lastGen = d.generation;
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    $("app").classList.remove("stale");
+  } catch (e) {
+    $("app").classList.add("stale");
+  } finally {
+    setTimeout(tick, 3000);
+  }
+}
+const initial = /*__INITIAL_STATE__*/null;
+if (initial) render(initial);
+setTimeout(tick, initial ? 3000 : 0);
+</script>
+</body>
+</html>

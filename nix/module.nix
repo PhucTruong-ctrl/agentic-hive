@@ -54,6 +54,24 @@ in
       description = "Host-wide project prerequisites (SPEC §5: Godot and common tools).";
     };
 
+    web = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Serve the read-only Beekeeper dashboard (hive-web).";
+      };
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 80;
+        description = "HTTP port for the dashboard.";
+      };
+      openFirewallOn = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ "tailscale0" ];
+        description = "Interfaces on which the dashboard port is opened. Empty = localhost only in practice.";
+      };
+    };
+
     claudeHooks = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -113,6 +131,67 @@ in
         ExecStart = "${cfg.package}/bin/hive init";
       };
     };
+
+    # Read-only dashboard: its own user, read access through the hive group,
+    # everything else locked down.
+    users.users.hive-web = lib.mkIf cfg.web.enable {
+      isSystemUser = true;
+      group = "hive-web";
+      extraGroups = [ "hive" ];
+      description = "Agentic Hive dashboard";
+    };
+    users.groups.hive-web = lib.mkIf cfg.web.enable { };
+
+    systemd.services.hive-web = lib.mkIf cfg.web.enable {
+      description = "Agentic Hive Beekeeper dashboard (read-only)";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "network.target"
+        "agentic-hive-init.service"
+      ];
+      path = [ pkgs.git ];
+      environment = {
+        HIVE_ROOT = cfg.root;
+        # git refuses repos owned by another user unless marked safe.
+        GIT_CONFIG_COUNT = "1";
+        GIT_CONFIG_KEY_0 = "safe.directory";
+        GIT_CONFIG_VALUE_0 = "*";
+      };
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/hive-web --address 0.0.0.0 --port ${toString cfg.web.port}";
+        User = "hive-web";
+        Group = "hive-web";
+        SupplementaryGroups = [ "hive" ];
+        AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
+        CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadOnlyPaths = [ cfg.root ];
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectControlGroups = true;
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        SystemCallArchitectures = "native";
+        Restart = "on-failure";
+        RestartSec = 2;
+      };
+    };
+
+    networking.firewall.interfaces = lib.mkIf cfg.web.enable (
+      lib.genAttrs cfg.web.openFirewallOn (_: {
+        allowedTCPPorts = [ cfg.web.port ];
+      })
+    );
 
     environment.etc."claude-code/managed-settings.json" = lib.mkIf cfg.claudeHooks {
       text = builtins.toJSON {

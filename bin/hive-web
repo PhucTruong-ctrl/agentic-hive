@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""hive-web — Beekeeper dashboard over HTTP (SPEC §18). Read-only.
+
+    hive-web [--address 0.0.0.0] [--port 8080]
+
+GET /            the dashboard page (polls /api/state)
+GET /api/state   JSON snapshot of members, claims, Room and host
+
+Reads $HIVE_ROOT files and /proc only. Telemetry is a hint; process state
+wins: a member whose recorded pid is gone is reported as dead.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote
+
+HIVE_ROOT = Path(os.environ.get("HIVE_ROOT", "/srv/hive"))
+SHARE = Path(os.environ.get("HIVE_SHARE", Path(__file__).resolve().parent.parent / "share/agentic-hive"))
+WORKING_WINDOW = 120  # seconds of inactivity before "working" becomes "idle"
+ROOM_TAIL_BYTES = 512 * 1024
+ROOM_ENTRIES = 40
+
+ENTRY_RE = re.compile(r"^<!-- hive:entry gen=(\d+) member=(\S+) -->$")
+
+
+def read(path, default=""):
+    try:
+        return Path(path).read_text(errors="replace").strip()
+    except OSError:
+        return default
+
+
+def iso_to_epoch(s):
+    try:
+        return datetime.fromisoformat(s).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+class Cpu:
+    """CPU utilisation between successive samples of /proc/stat."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.prev = self._read()
+
+    @staticmethod
+    def _read():
+        f = [int(x) for x in read("/proc/stat").splitlines()[0].split()[1:9]]
+        idle = f[3] + f[4]
+        return idle, sum(f)
+
+    def percent(self):
+        with self.lock:
+            idle, total = self._read()
+            didle, dtotal = idle - self.prev[0], total - self.prev[1]
+            if dtotal < 50:  # too soon since the last sample; keep the old baseline
+                return getattr(self, "last", None)
+            self.prev = (idle, total)
+            self.last = round(100 * (dtotal - didle) / dtotal)
+            return self.last
+
+
+CPU = Cpu()
+
+
+def host():
+    mem = {}
+    for line in read("/proc/meminfo").splitlines():
+        k, v = line.split(":", 1)
+        mem[k] = int(v.split()[0]) * 1024
+    disk = shutil.disk_usage(HIVE_ROOT)
+    return {
+        "hostname": os.uname().nodename,
+        "cpu_percent": CPU.percent(),
+        "cpus": os.cpu_count(),
+        "load": [float(x) for x in read("/proc/loadavg").split()[:3]],
+        "mem_total": mem.get("MemTotal"),
+        "mem_used": mem.get("MemTotal", 0) - mem.get("MemAvailable", 0),
+        "disk_total": disk.total,
+        "disk_used": disk.used,
+        "uptime": float(read("/proc/uptime", "0").split()[0]),
+    }
+
+
+def alive(pid, harness):
+    if not isinstance(pid, int) or pid <= 1:
+        return False
+    comm = read(f"/proc/{pid}/comm")
+    return bool(comm) and (comm.startswith(harness) or comm.startswith("." + harness) or comm.startswith("node"))
+
+
+def members(generation, now):
+    out = []
+    mdir = HIVE_ROOT / "members"
+    for d in sorted(p for p in mdir.iterdir() if p.is_dir()) if mdir.is_dir() else []:
+        name = d.name
+        try:
+            t = json.loads(read(HIVE_ROOT / "telemetry/members" / f"{name}.json", "{}") or "{}")
+        except json.JSONDecodeError:
+            t = {}
+        last = iso_to_epoch(t.get("last_activity"))
+        harness = t.get("harness") or ""
+        if not t:
+            state = "never"
+        elif alive(t.get("pid"), harness):
+            recent = last is not None and now - last < WORKING_WINDOW
+            state = "working" if t.get("status") == "working" and recent else "idle"
+        else:
+            state = "dead"
+        cursor = read(d / "state/last-delivered-generation", "0")
+        cursor = int(cursor) if cursor.isdigit() else 0
+        cwd = t.get("cwd") or ""
+        out.append({
+            "member": name,
+            "state": state,
+            "harness": harness or None,
+            "pid": t.get("pid"),
+            "started_at": t.get("started_at"),
+            "last_activity": t.get("last_activity"),
+            "cwd": cwd,
+            "cwd_short": cwd[len(str(HIVE_ROOT)) + 1:] if cwd.startswith(str(HIVE_ROOT) + "/") else cwd,
+            "git_branch": t.get("git_branch"),
+            "last_tool": t.get("last_tool"),
+            "undelivered": max(0, generation - cursor),
+            "notes": sorted(p.name for p in (d / "notes").glob("*") if p.is_file())[-5:],
+        })
+    return out
+
+
+def claims():
+    out = []
+    cdir = HIVE_ROOT / "claims"
+    for d in sorted(cdir.iterdir()) if cdir.is_dir() else []:
+        if d.is_dir():
+            out.append({
+                "owner": read(d / "owner", "?"),
+                "resource": read(d / "resource", unquote(d.name)),
+                "created_at": read(d / "created-at") or None,
+            })
+    return out
+
+
+def room(limit=ROOM_ENTRIES):
+    path = HIVE_ROOT / "ROOM.md"
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - ROOM_TAIL_BYTES))
+            text = f.read().decode(errors="replace")
+    except OSError:
+        return []
+    entries, cur = [], None
+    for line in text.splitlines():
+        m = ENTRY_RE.match(line)
+        if m:
+            cur = {"gen": int(m[1]), "member": m[2], "ts": None, "body": []}
+            entries.append(cur)
+        elif cur is not None:
+            if cur["ts"] is None and line.startswith("## "):
+                cur["ts"] = line[3:].split(" — ", 1)[0]
+            else:
+                cur["body"].append(line)
+    for e in entries:
+        body = "\n".join(e["body"]).strip()
+        body = re.sub(r"\n*Generation: %d\s*$" % e["gen"], "", body).strip()
+        e["body"] = body
+    return entries[-limit:]
+
+
+def git_activity(paths, limit=8):
+    """Recent commits across the worktrees members are in (optional, SPEC §18)."""
+    seen, out = set(), []
+    for p in paths:
+        if not p or not os.path.isdir(p):
+            continue
+        try:
+            top = subprocess.run(["git", "-C", p, "rev-parse", "--show-toplevel"],
+                                 capture_output=True, text=True, timeout=3).stdout.strip()
+            if not top or top in seen:
+                continue
+            seen.add(top)
+            log = subprocess.run(["git", "-C", top, "log", "-n", str(limit), "--date=iso-strict",
+                                  "--format=%h%x1f%an%x1f%ad%x1f%s%x1f%D"],
+                                 capture_output=True, text=True, timeout=3).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in log.splitlines():
+            h, author, date, subject, refs = (line.split("\x1f") + [""] * 5)[:5]
+            out.append({"repo": os.path.basename(top), "hash": h, "author": author,
+                        "date": date, "subject": subject, "refs": refs})
+    out.sort(key=lambda c: c["date"], reverse=True)
+    return out[:limit]
+
+
+def state():
+    now = time.time()
+    g = read(HIVE_ROOT / ".room-generation", "0")
+    generation = int(g) if g.isdigit() else 0
+    ms = members(generation, now)
+    return {
+        "hive_root": str(HIVE_ROOT),
+        "now": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "generation": generation,
+        "host": host(),
+        "members": ms,
+        "claims": claims(),
+        "room": room(),
+        "git": git_activity([m["cwd"] for m in ms if m["state"] in ("working", "idle")]),
+    }
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "hive-web/0.1"
+
+    def _send(self, code, body, ctype):
+        data = body.encode() if isinstance(body, str) else body
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
+            page = (SHARE / "dashboard.html").read_text()
+            try:  # first paint without waiting for the first poll
+                initial = json.dumps(state()).replace("</", "<\\/")
+                page = page.replace("/*__INITIAL_STATE__*/null", initial, 1)
+            except Exception:
+                pass
+            self._send(200, page, "text/html; charset=utf-8")
+        elif path == "/api/state":
+            try:
+                self._send(200, json.dumps(state()), "application/json")
+            except Exception as e:  # never take the page down; report instead
+                self._send(500, json.dumps({"error": str(e)}), "application/json")
+        elif path == "/healthz":
+            self._send(200, "ok\n", "text/plain")
+        else:
+            self._send(404, "not found\n", "text/plain")
+
+    do_HEAD = do_GET
+
+    def log_message(self, fmt, *args):
+        pass  # polled every few seconds; keep the journal quiet
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--address", default=os.environ.get("HIVE_WEB_ADDRESS", "0.0.0.0"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("HIVE_WEB_PORT", "8080")))
+    ap.add_argument("--dump", action="store_true", help="print one /api/state snapshot and exit")
+    a = ap.parse_args()
+    if a.dump:
+        time.sleep(0.3)
+        print(json.dumps(state(), indent=2))
+        return
+    srv = ThreadingHTTPServer((a.address, a.port), Handler)
+    print(f"hive-web: serving {HIVE_ROOT} on http://{a.address}:{a.port}/", flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
