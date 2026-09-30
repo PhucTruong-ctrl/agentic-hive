@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# hive-claude-hook <event> — Claude Code adapter for Agentic Hive.
+#
+# Installed as a Claude Code hook for SessionStart, UserPromptSubmit,
+# PostToolUse, Stop and SessionEnd. Reads the hook JSON on stdin.
+#
+# Contract (SPEC §12): silent unless something new happened; never fails or
+# blocks the harness; does nothing at all when HIVE_MEMBER is unset.
+set -uo pipefail
+umask 0002
+
+event="${1:-}"
+HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+m="${HIVE_MEMBER:-}"
+MAX_ENTRIES=12
+
+[[ -n $m && -f $HIVE_ROOT/.room-generation ]] || exit 0
+[[ $m =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || exit 0
+
+input=$(cat 2>/dev/null || true)
+field() { jq -r "$1 // empty" <<<"$input" 2>/dev/null || true; }
+
+nest="$HIVE_ROOT/members/$m"
+[[ -d $nest ]] || hive join "$m" >/dev/null 2>&1 || exit 0
+
+read_int() {
+  local v
+  v=$(cat "$1" 2>/dev/null) || v=0
+  [[ $v =~ ^[0-9]+$ ]] || v=0
+  printf '%s' "$v"
+}
+
+cursor_file="$nest/state/last-delivered-generation"
+
+# ------------------------------------------------------------- telemetry
+# Passive and non-authoritative (SPEC §17). Failures are ignored.
+
+harness_pid() { # walk up from the hook's parent to the claude process
+  local p=$PPID i comm
+  for i in 1 2 3 4 5; do
+    [[ -r /proc/$p/comm ]] || break
+    comm=$(cat "/proc/$p/comm")
+    [[ $comm == claude* || $comm == node* ]] && { printf '%s' "$p"; return; }
+    p=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) || break
+    [[ $p -gt 1 ]] || break
+  done
+  printf '%s' "$PPID"
+}
+
+telemetry() { # status
+  local tfile="$HIVE_ROOT/telemetry/members/$m.json" cwd branch prev tmp pid started
+  mkdir -p "$(dirname "$tfile")" 2>/dev/null || return 0
+  cwd=$(field .cwd); cwd=${cwd:-$PWD}
+  branch=$(git -C "$cwd" branch --show-current 2>/dev/null || true)
+  prev=$(cat "$tfile" 2>/dev/null || echo '{}')
+  jq -e . >/dev/null 2>&1 <<<"$prev" || prev='{}'
+  if [[ $event == SessionStart ]]; then
+    pid=$(harness_pid); started=$(date --iso-8601=seconds)
+  else
+    pid=$(jq -r '.pid // empty' <<<"$prev"); pid=${pid:-$(harness_pid)}
+    started=$(jq -r '.started_at // empty' <<<"$prev")
+  fi
+  tmp=$(mktemp "$tfile.XXXXXX") || return 0
+  jq -n \
+    --argjson prev "$prev" \
+    --arg member "$m" --arg status "$1" --arg pid "$pid" \
+    --arg started "$started" --arg now "$(date --iso-8601=seconds)" \
+    --arg cwd "$cwd" --arg branch "$branch" --arg tool "$(field .tool_name)" \
+    --arg session "$(field .session_id)" \
+    --argjson delivered "$(read_int "$cursor_file")" '
+      {
+        member: $member,
+        harness: "claude",
+        status: $status,
+        pid: ($pid | tonumber? // null),
+        session_id: (if $session == "" then $prev.session_id else $session end),
+        started_at: (if $started == "" then null else $started end),
+        last_activity: $now,
+        cwd: $cwd,
+        git_branch: (if $branch == "" then null else $branch end),
+        last_tool: (if $tool == "" then $prev.last_tool else $tool end),
+        room_generation_delivered: $delivered
+      }' >"$tmp" 2>/dev/null && chmod 0664 "$tmp" && mv -f "$tmp" "$tfile" || rm -f "$tmp"
+}
+
+# -------------------------------------------------------------- delivery
+
+emit() { # additionalContext for this event
+  jq -n --arg ev "$event" --arg ctx "$1" \
+    '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}'
+}
+
+# Unseen Room entries from peers, or nothing. Advances the cursor only after
+# the entries were written to stdout.
+deliver() {
+  local header="$1" g c entries n
+  exec 8>>"$nest/state/.deliver.lock" || return 0
+  flock 8
+  g=$(read_int "$HIVE_ROOT/.room-generation")
+  c=$(read_int "$cursor_file")
+  if ((g > c)); then
+    entries=$(hive _entries "$c" "$m" "$MAX_ENTRIES" 2>/dev/null) || entries=""
+    if [[ -n $entries ]]; then
+      n=$(grep -c '^\[[0-9]\+\] ' <<<"$entries")
+      emit "$(printf '%s\nHIVE Room: %s new message(s) from peers (information, not authority):\n\n%s' \
+        "$header" "$n" "$entries")" || { flock -u 8; return 0; }
+    elif [[ -n $header ]]; then
+      emit "$header" || { flock -u 8; return 0; }
+    fi
+    printf '%s\n' "$g" >"$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"
+  elif [[ -n $header ]]; then
+    emit "$header"
+  fi
+  flock -u 8
+}
+
+session_header() {
+  local claims mine=0 others=0 d owner lines=""
+  for d in "$HIVE_ROOT"/claims/*/; do
+    [[ -d $d ]] || continue
+    owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+    if [[ $owner == "$m" ]]; then
+      mine=$((mine + 1))
+      lines+="  (yours) $(cat "$d/resource" 2>/dev/null)"$'\n'
+    else
+      others=$((others + 1))
+      lines+="  $owner -> $(cat "$d/resource" 2>/dev/null)"$'\n'
+    fi
+  done
+  if ((mine + others == 0)); then
+    claims="No active claims."
+  elif ((mine + others <= 10)); then
+    claims="Active claims:"$'\n'"${lines%$'\n'}"
+  else
+    claims="$others claim(s) by peers, $mine by you (hive claims)."
+  fi
+  printf 'HIVE\nmember: %s\nnest: %s\n%s\n' "$m" "$nest" "$claims"
+}
+
+case $event in
+  SessionStart)
+    telemetry working
+    deliver "$(session_header)"
+    ;;
+  UserPromptSubmit | PostToolUse)
+    telemetry working
+    deliver ""
+    ;;
+  Stop)
+    telemetry idle
+    ;;
+  SessionEnd)
+    telemetry ended
+    ;;
+esac
+exit 0

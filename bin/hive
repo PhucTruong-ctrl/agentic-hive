@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# hive — Agentic Hive Core CLI.
+# Deterministic convenience over plain files in $HIVE_ROOT (default /srv/hive).
+# Everything it does can be inspected with cat/ls/rg; see SPEC.md.
+set -euo pipefail
+umask 0002
+
+HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+ROOM="$HIVE_ROOT/ROOM.md"
+GEN_FILE="$HIVE_ROOT/.room-generation"
+ROOM_LOCK="$HIVE_ROOT/.room.lock"
+
+die() { printf 'hive: %s\n' "$*" >&2; exit 1; }
+now() { date --iso-8601=seconds; }
+
+usage() {
+  cat <<'EOF'
+usage:
+  hive init
+  hive join <member>
+  hive say <message...>          (or: hive say - < file)
+  hive room [--last N] [--since-last] [--since G]
+  hive observe
+  hive claim <resource>
+  hive release <resource>
+  hive claims
+  hive claim break <resource>
+  hive knowledge search <query...>
+
+Member identity comes from $HIVE_MEMBER.
+EOF
+}
+
+valid_member() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; }
+
+require_init() { [[ -f $GEN_FILE && -f $ROOM ]] || die "$HIVE_ROOT is not initialized (run: hive init)"; }
+
+require_member() {
+  local m="${HIVE_MEMBER:-}"
+  [[ -n $m ]] || die "HIVE_MEMBER is not set"
+  valid_member "$m" || die "invalid member name: $m"
+  [[ -d $HIVE_ROOT/members/$m ]] || die "member '$m' has not joined (run: hive join $m)"
+  printf '%s' "$m"
+}
+
+read_int() { # file -> integer (0 if missing/garbage)
+  local v
+  v=$(cat "$1" 2>/dev/null) || v=0
+  [[ $v =~ ^[0-9]+$ ]] || v=0
+  printf '%s' "$v"
+}
+
+generation() { read_int "$GEN_FILE"; }
+cursor_file() { printf '%s/members/%s/state/last-delivered-generation' "$HIVE_ROOT" "$1"; }
+cursor() { read_int "$(cursor_file "$1")"; }
+
+atomic_write() { # path content
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX")
+  printf '%s\n' "$2" >"$tmp"
+  chmod 0664 "$tmp"
+  mv -f "$tmp" "$1"
+}
+
+# Highest generation actually present in ROOM.md. Guards against a crash
+# between appending an entry and updating .room-generation.
+room_last_gen() {
+  tac "$ROOM" 2>/dev/null | sed -n 's/^<!-- hive:entry gen=\([0-9]\+\) member=[^ ]* -->$/\1/p;T;q' || true
+}
+
+# Print Room entries with generation > since, compactly.
+#   $1 since   $2 exclude-member (or "")   $3 max entries (0 = all)
+room_entries() {
+  [[ -f $ROOM ]] || return 0
+  gawk -v since="$1" -v exclude="$2" -v max="$3" -v maxlines=40 '
+    function flush(   n, s, i, out) {
+      if (gen == "") return
+      if (gen + 0 > since + 0 && member != exclude) {
+        n = nb
+        while (n > 0 && body[n] ~ /^[[:space:]]*$/) n--
+        if (n > 0 && body[n] == "Generation: " gen) n--
+        while (n > 0 && body[n] ~ /^[[:space:]]*$/) n--
+        s = 1
+        while (s <= n && body[s] ~ /^[[:space:]]*$/) s++
+        out = sprintf("[%s] %s — %s\n", gen, member, ts)
+        for (i = s; i <= n && i - s < maxlines; i++) out = out "    " body[i] "\n"
+        if (n - s + 1 > maxlines) out = out "    … (truncated; full entry in ROOM.md)\n"
+        entries[++ne] = out
+        gens[ne] = gen
+      }
+      gen = ""; nb = 0; ts = ""
+    }
+    match($0, /^<!-- hive:entry gen=([0-9]+) member=([^ ]+) -->$/, m) {
+      flush(); gen = m[1]; member = m[2]; state = 1; next
+    }
+    gen != "" && state == 1 && /^## / {
+      ts = $0; sub(/^## /, "", ts); sub(/ — .*$/, "", ts); state = 2; next
+    }
+    gen != "" { body[++nb] = $0 }
+    END {
+      flush()
+      first = 1
+      if (max > 0 && ne > max) {
+        first = ne - max + 1
+        printf "(%d earlier entries omitted — see: hive room --since %d)\n\n", first - 1, since
+      }
+      for (i = first; i <= ne; i++) printf "%s", entries[i]
+    }
+  ' "$ROOM"
+}
+
+claim_dir() { # resource -> claim directory path
+  local enc
+  enc=$(jq -rn --arg r "$1" '$r|@uri')
+  [[ $enc == .* ]] && enc="%2E${enc:1}"
+  printf '%s/claims/%s' "$HIVE_ROOT" "$enc"
+}
+
+norm_resource() { # strip trailing slashes (but keep "/")
+  local r="$1"
+  while [[ $r == */ && $r != / ]]; do r="${r%/}"; done
+  printf '%s' "$r"
+}
+
+# Two resources overlap if equal or one is a path prefix of the other.
+overlaps() {
+  local a b
+  a=$(norm_resource "$1"); b=$(norm_resource "$2")
+  [[ $a == "$b" || $b == "$a"/* || $a == "$b"/* ]]
+}
+
+notify() { # best-effort: flash a message in other members' tmux sessions
+  local from="$1" s
+  command -v tmux >/dev/null 2>&1 || return 0
+  tmux list-sessions -F '#S' 2>/dev/null | while read -r s; do
+    [[ $s == hive-* && $s != "hive-$from" ]] || continue
+    tmux display-message -t "$s" "hive: new Room message from $from" 2>/dev/null || true
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_init() {
+  mkdir -p "$HIVE_ROOT"/{members,claims,knowledge,projects,tools/bin,telemetry/members,artifacts,history}
+  [[ -e $ROOM ]] || printf '# Hive Room\n\n' >"$ROOM"
+  [[ -e $GEN_FILE ]] || atomic_write "$GEN_FILE" 0
+  [[ -e $ROOM_LOCK ]] || : >"$ROOM_LOCK"
+  [[ -e $HIVE_ROOT/knowledge/INDEX.md ]] || cat >"$HIVE_ROOT/knowledge/INDEX.md" <<'EOF'
+# Knowledge Vault
+
+Curated, durable Hive knowledge. Not transcripts, not task status.
+Add a line here when you add a file.
+EOF
+  chmod g+w "$ROOM" "$ROOM_LOCK" 2>/dev/null || true
+  echo "hive: initialized $HIVE_ROOT (generation $(generation))"
+}
+
+cmd_join() {
+  local m="${1:-}"
+  [[ -n $m ]] || die "usage: hive join <member>"
+  valid_member "$m" || die "invalid member name: $m (use lowercase letters, digits, . _ -)"
+  require_init
+  local nest="$HIVE_ROOT/members/$m"
+  mkdir -p "$nest"/{state,notes,scratch,artifacts}
+  [[ -e $(cursor_file "$m") ]] || atomic_write "$(cursor_file "$m")" 0
+  echo "hive: $m joined ($nest)"
+}
+
+cmd_say() {
+  require_init
+  local m body g ts
+  m=$(require_member)
+  if [[ ${1:-} == - ]]; then
+    body=$(cat)
+  else
+    body="$*"
+  fi
+  [[ -n ${body//[[:space:]]/} ]] || die "usage: hive say <message...>"
+  # Keep bodies from forging entry markers.
+  body=$(printf '%s\n' "$body" | sed 's/^<!-- hive:entry/ &/')
+
+  exec 9>>"$ROOM_LOCK"
+  flock 9
+  g=$(generation)
+  local last; last=$(room_last_gen)
+  [[ -n $last && $last -gt $g ]] && g=$last
+  g=$((g + 1))
+  ts=$(now)
+  printf '<!-- hive:entry gen=%s member=%s -->\n## %s — %s\n\n%s\n\nGeneration: %s\n\n' \
+    "$g" "$m" "$ts" "$m" "$body" "$g" >>"$ROOM"
+  atomic_write "$GEN_FILE" "$g"
+  flock -u 9
+  exec 9>&-
+
+  notify "$m" || true
+  echo "hive: said (generation $g)"
+}
+
+cmd_room() {
+  require_init
+  local last="" since="" since_last=0 g
+  while (($#)); do
+    case $1 in
+      --last) last="${2:?--last needs N}"; shift 2 ;;
+      --since) since="${2:?--since needs a generation}"; shift 2 ;;
+      --since-last) since_last=1; shift ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+  g=$(generation)
+  if ((since_last)); then
+    since=$(cursor "$(require_member)")
+  elif [[ -z $since ]]; then
+    since=$((g - ${last:-10})); ((since < 0)) && since=0
+  fi
+  room_entries "$since" "" 0
+}
+
+cmd_claims() {
+  require_init
+  local d any=0
+  for d in "$HIVE_ROOT"/claims/*/; do
+    [[ -d $d ]] || continue
+    any=1
+    printf '%s -> %s (since %s)\n' \
+      "$(cat "$d/owner" 2>/dev/null || echo '?')" \
+      "$(cat "$d/resource" 2>/dev/null || basename "$d")" \
+      "$(cat "$d/created-at" 2>/dev/null || echo '?')"
+  done
+  ((any)) || echo "(no active claims)"
+}
+
+cmd_claim() {
+  if [[ ${1:-} == break ]]; then shift; cmd_claim_break "$@"; return; fi
+  require_init
+  local m r d owner other
+  m=$(require_member)
+  r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive claim <resource>"
+  d=$(claim_dir "$r")
+
+  for other in "$HIVE_ROOT"/claims/*/; do
+    [[ -d $other && ${other%/} != "$d" ]] || continue
+    owner=$(cat "$other/owner" 2>/dev/null || echo '?')
+    [[ $owner == "$m" ]] && continue
+    if overlaps "$r" "$(cat "$other/resource" 2>/dev/null)"; then
+      die "'$r' overlaps '$(cat "$other/resource")' claimed by $owner — coordinate in the Room"
+    fi
+  done
+
+  if mkdir "$d" 2>/dev/null; then
+    printf '%s\n' "$m" >"$d/owner"
+    printf '%s\n' "$r" >"$d/resource"
+    now >"$d/created-at"
+    echo "hive: claimed $r"
+  else
+    owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+    [[ $owner == "$m" ]] && { echo "hive: already yours: $r"; return 0; }
+    die "'$r' is claimed by $owner since $(cat "$d/created-at" 2>/dev/null || echo '?') — coordinate in the Room, or 'hive claim break' if it is stale"
+  fi
+}
+
+cmd_release() {
+  require_init
+  local m r d owner
+  m=$(require_member)
+  r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive release <resource>"
+  d=$(claim_dir "$r")
+  [[ -d $d ]] || die "no claim on '$r'"
+  owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+  [[ $owner == "$m" ]] || die "'$r' is held by $owner, not you (use 'hive claim break' if it is stale)"
+  rm -f "$d"/{owner,resource,created-at}
+  rmdir "$d"
+  echo "hive: released $r"
+}
+
+cmd_claim_break() {
+  require_init
+  local m r d owner since
+  m=$(require_member)
+  r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive claim break <resource>"
+  d=$(claim_dir "$r")
+  [[ -d $d ]] || die "no claim on '$r'"
+  owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+  since=$(cat "$d/created-at" 2>/dev/null || echo '?')
+  rm -f "$d"/{owner,resource,created-at}
+  rmdir "$d"
+  echo "hive: broke claim on $r (was $owner since $since)"
+  # Breaking a claim is never silent.
+  cmd_say "Broke claim on \`$r\` (held by $owner since $since)." >/dev/null
+}
+
+cmd_observe() {
+  require_init
+  local m="${HIVE_MEMBER:-}" g c
+  g=$(generation)
+  echo "HIVE"
+  if [[ -n $m && -d $HIVE_ROOT/members/$m ]]; then
+    c=$(cursor "$m")
+    echo "member: $m"
+    echo "room: generation $g ($((g > c ? g - c : 0)) not yet delivered)"
+  else
+    echo "member: ${m:-(none)}"
+    echo "room: generation $g"
+  fi
+  echo
+  echo "CLAIMS"
+  cmd_claims
+  echo
+  echo "RECENT ROOM"
+  local since=$((g - 5)); ((since < 0)) && since=0
+  room_entries "$since" "" 0
+}
+
+cmd_knowledge() {
+  [[ ${1:-} == search ]] || die "usage: hive knowledge search <query...>"
+  shift
+  (($#)) || die "usage: hive knowledge search <query...>"
+  local args=() w
+  for w in "$@"; do args+=(-e "$w"); done
+  rg -n -i -F --heading "${args[@]}" -- "$HIVE_ROOT/knowledge" || echo "(no matches)"
+}
+
+main() {
+  local cmd="${1:-}"
+  (($#)) && shift
+  case $cmd in
+    init) cmd_init "$@" ;;
+    join) cmd_join "$@" ;;
+    say) cmd_say "$@" ;;
+    room) cmd_room "$@" ;;
+    observe) cmd_observe "$@" ;;
+    claim) cmd_claim "$@" ;;
+    release) cmd_release "$@" ;;
+    claims) cmd_claims "$@" ;;
+    knowledge) cmd_knowledge "$@" ;;
+    # Used by harness adapters; not part of the agent-facing surface.
+    _entries) room_entries "$@" ;;
+    -h | --help | help | "") usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

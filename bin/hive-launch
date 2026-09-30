@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# hive-launch — start or attach a persistent member session in tmux.
+#
+#   hive-launch <member> [claude|codex] [dir] [-- harness args...]
+#   hive-launch --list
+#
+# Members run as the `hive` Unix user. When invoked by another user (the
+# Beekeeper), re-executes itself through sudo.
+set -euo pipefail
+
+HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+HIVE_USER="${HIVE_USER:-hive}"
+SHARE="${HIVE_SHARE:-$(dirname "$(readlink -f "$0")")/../share/agentic-hive}"
+
+die() { printf 'hive-launch: %s\n' "$*" >&2; exit 1; }
+
+if [[ $(id -un) != "$HIVE_USER" ]]; then
+  exec sudo -u "$HIVE_USER" -i -- hive-launch "$@"
+fi
+
+# Inner mode: runs inside the tmux pane.
+if [[ ${1:-} == --run ]]; then
+  shift
+  harness="$1"; shift
+  case $harness in
+    claude)
+      claude --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
+      ;;
+    codex)
+      echo "hive: no Codex adapter yet — Room awareness is manual (hive room --since-last)." >&2
+      codex "$@" || true
+      ;;
+    *) die "unknown harness: $harness" ;;
+  esac
+  echo
+  echo "[$harness exited — shell kept open; HIVE_MEMBER=$HIVE_MEMBER]"
+  exec bash -l
+fi
+
+if [[ ${1:-} == --list ]]; then
+  tmux list-sessions -F '#S  created #{t:session_created}  #{?session_attached,attached,detached}' 2>/dev/null \
+    | grep '^hive-' || echo "(no member sessions)"
+  exit 0
+fi
+
+member="${1:-}"; [[ -n $member ]] || die "usage: hive-launch <member> [claude|codex] [dir] [-- args...]"
+shift
+harness=claude
+dir="$HIVE_ROOT/projects"
+[[ $# -gt 0 && $1 != -- ]] && { harness="$1"; shift; }
+[[ $# -gt 0 && $1 != -- ]] && { dir="$1"; shift; }
+[[ ${1:-} == -- ]] && shift
+[[ -d $dir ]] || die "no such directory: $dir"
+dir=$(readlink -f "$dir")
+
+hive join "$member" >/dev/null
+session="hive-$member"
+
+if ! tmux has-session -t "=$session" 2>/dev/null; then
+  tmux new-session -d -s "$session" -c "$dir" \
+    -e "HIVE_MEMBER=$member" \
+    -e "HIVE_ROOT=$HIVE_ROOT" \
+    -e "PATH=$PATH:$HIVE_ROOT/tools/bin" \
+    -- "$0" --run "$harness" "$@"
+  echo "hive-launch: started $session ($harness in $dir)"
+fi
+
+if [[ -n ${TMUX:-} ]]; then
+  exec tmux switch-client -t "=$session"
+elif [[ -t 1 ]]; then
+  exec tmux attach-session -t "=$session"
+fi
