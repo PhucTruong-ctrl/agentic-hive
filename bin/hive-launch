@@ -18,6 +18,28 @@ if [[ $(id -un) != "$HIVE_USER" ]]; then
   exec sudo -u "$HIVE_USER" -i -- hive-launch "$@"
 fi
 
+# Codex reads user-level hooks from ~/.codex/hooks.json. The command path is
+# the stable system profile path, so the file (and Codex's trust hash for it)
+# does not change across rebuilds.
+install_codex_hooks() {
+  local hook=/run/current-system/sw/bin/hive-hook f="$HOME/.codex/hooks.json" want
+  [[ -x $hook ]] || hook=$(command -v hive-hook) || {
+    echo "hive-launch: hive-hook not found; Codex runs without Room awareness" >&2
+    return 0
+  }
+  want=$(jq -n --arg h "$hook" '
+    def on($e): [{hooks: [{type: "command", command: "\($h) codex \($e)"}]}];
+    {hooks: {
+      SessionStart: on("SessionStart"),
+      UserPromptSubmit: on("UserPromptSubmit"),
+      PostToolUse: [{matcher: "*", hooks: [{type: "command", command: "\($h) codex PostToolUse"}]}],
+      Stop: on("Stop"),
+      SessionEnd: on("SessionEnd")
+    }}')
+  mkdir -p "$HOME/.codex"
+  [[ -f $f && $(cat "$f") == "$want" ]] || printf '%s\n' "$want" >"$f"
+}
+
 # Inner mode: runs inside the tmux pane.
 if [[ ${1:-} == --run ]]; then
   shift
@@ -27,8 +49,8 @@ if [[ ${1:-} == --run ]]; then
       claude --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
       ;;
     codex)
-      echo "hive: no Codex adapter yet — Room awareness is manual (hive room --since-last)." >&2
-      codex "$@" || true
+      install_codex_hooks
+      codex -c "developer_instructions=$(jq -Rs . <"$SHARE/member-instruction.md")" "$@" || true
       ;;
     *) die "unknown harness: $harness" ;;
   esac

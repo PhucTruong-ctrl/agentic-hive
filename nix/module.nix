@@ -12,7 +12,7 @@
 
 let
   cfg = config.services.agentic-hive;
-  hookCmd = event: "${cfg.package}/bin/hive-claude-hook ${event}";
+  hookCmd = event: "${cfg.package}/bin/hive-hook claude ${event}";
   hook = event: [ { hooks = [ { type = "command"; command = hookCmd event; } ]; } ];
 in
 {
@@ -43,6 +43,15 @@ in
         codex
       ];
       description = "Agent harnesses available to members.";
+    };
+
+    extraPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = with pkgs; [
+        godot
+        unzip
+      ];
+      description = "Host-wide project prerequisites (SPEC §5: Godot and common tools).";
     };
 
     claudeHooks = lib.mkOption {
@@ -156,6 +165,7 @@ in
         bubblewrap
         xvfb
         python3
-      ]);
+      ])
+      ++ cfg.extraPackages;
   };
 }

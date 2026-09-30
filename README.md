@@ -4,7 +4,7 @@ A persistent NixOS/Unix habitat for coding-agent sessions. See `SPEC.md`.
 
 ```
 bin/hive               Hive Core CLI (Room, claims, cursors, knowledge search)
-bin/hive-claude-hook   Claude Code adapter (SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd)
+bin/hive-hook          harness adapter: `hive-hook claude|codex <event>` (SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd)
 bin/hive-launch        tmux launcher: one session per member, runs as the `hive` user
 share/member-instruction.md   the §13 instruction, appended to Claude's system prompt
 nix/module.nix         NixOS module (the "tree")
@@ -56,7 +56,7 @@ Generation: 42
 
 ## Not built yet (by design, SPEC §2.6 / §23)
 
-- Codex / OpenCode adapters (Codex 0.158 has `hooks.json`; next step after Claude is validated).
+- OpenCode adapter. Codex hooks are installed by `hive-launch` into `~hive/.codex/hooks.json` (not yet validated live).
 - Dashboard (§18) — `hive observe` + `telemetry/members/*.json` until needed.
 - Sandbox levels 1–4 helpers — only `bubblewrap` is installed.
 

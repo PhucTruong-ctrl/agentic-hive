@@ -12,7 +12,7 @@ ok() { pass=$((pass + 1)); printf 'ok   %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 check() { local name="$1"; shift; if "$@"; then ok "$name"; else fail "$name"; fi; }
 hook() { # member event [json]
-  HIVE_MEMBER="$1" hive-claude-hook "$2" <<<"${3:-"{\"cwd\":\"$HIVE_ROOT\",\"tool_name\":\"Bash\"}"}"
+  HIVE_MEMBER="$1" hive-hook claude "$2" <<<"${3:-"{\"cwd\":\"$HIVE_ROOT\",\"tool_name\":\"Bash\"}"}"
 }
 
 hive init >/dev/null
@@ -86,8 +86,12 @@ check "knowledge search" grep -q xvfb <(hive knowledge search XVFB)
 hook carol Stop >/dev/null
 check "telemetry written" test "$(jq -r .status "$HIVE_ROOT/telemetry/members/carol.json")" = idle
 
+# Codex uses the same adapter; telemetry records the harness.
+HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
+check "codex telemetry harness" test "$(jq -r .harness "$HIVE_ROOT/telemetry/members/bob.json")" = codex
+
 # Hook is a no-op outside Hive.
-check "hook silent without member" test -z "$(HIVE_MEMBER= hive-claude-hook PostToolUse <<<'{}')"
+check "hook silent without member" test -z "$(HIVE_MEMBER= hive-hook claude PostToolUse <<<'{}')"
 
 hive observe >/dev/null
 check "room --last" test "$(hive room --last 3 | grep -c '^\[')" = 3

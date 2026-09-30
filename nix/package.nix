@@ -31,7 +31,7 @@ stdenvNoCC.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -Dm755 -t $out/bin bin/hive bin/hive-claude-hook bin/hive-launch
+    install -Dm755 -t $out/bin bin/hive bin/hive-hook bin/hive-launch
     install -Dm644 -t $out/share/agentic-hive share/member-instruction.md
     patchShebangs $out/bin
     for f in $out/bin/*; do
