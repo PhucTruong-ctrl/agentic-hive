@@ -170,16 +170,17 @@ let lastGen = null;
 // Copyable commands per member state. The page never runs anything itself.
 function commands(m) {
   const n = m.member;
-  if (m.state === "working" || m.state === "idle") return [
+  if (m.state === "working") return [
     ["attach", `hive-attach ${n}`],
-    ["restart", `hive-session restart ${n}` + (m.state === "working" ? " --force" : "")],
-    ["kill", `hive-session kill ${n}` + (m.state === "working" ? " --force" : "")],
+    ["restart", `hive-session restart ${n} --force`],
   ];
-  if (m.state === "dead") return [
-    ["wake", `hive-session wake ${n}`],
-    ["fresh", `hive-session wake ${n} --fresh`],
+  if (m.state === "idle") return [
+    ["attach", `hive-attach ${n}`],
+    ["restart", `hive-session restart ${n}`],
+    ["kill", `hive-session kill ${n}`],
   ];
-  return [["start", `hive-session wake ${n} --fresh`]];
+  // wake resumes the last conversation (or starts one) and attaches
+  return [[m.state === "dead" ? "wake" : "start", `hive-session wake ${n}`]];
 }
 
 function render(d) {

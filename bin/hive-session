@@ -2,11 +2,12 @@
 # hive-session — lifecycle of member sessions (Beekeeper tool).
 #
 #   hive-session status [member]          what is running
-#   hive-session wake <member> [--fresh]  bring a dead member back, resuming
-#                                         its last conversation (--fresh: new one)
+#   hive-session wake <member> [--fresh]  bring a member back, resuming its last
+#                                         conversation, and attach (--fresh: new
+#                                         conversation). Already running: attach.
 #   hive-session restart <member> [--force] [--fresh]
-#                                         kill and wake; refuses while the member
-#                                         is working unless --force
+#                                         kill and wake (and attach); refuses while
+#                                         the member is working unless --force
 #   hive-session kill <member> [--force]  end the member's tmux session
 #
 # Harness, directory and conversation come from the member's launch record
@@ -90,7 +91,8 @@ cmd_kill() {
 cmd_wake() {
   local m="$1" fresh="$2" harness dir sid args=()
   if harness_alive "$m"; then
-    say "$m is already running ($(state "$m")); attach with: hive-attach $m"
+    say "$m is already running ($(state "$m"))"
+    attach "$m"
     return 0
   fi
   # A pane left at a shell after the harness exited: replace it.
@@ -111,7 +113,15 @@ cmd_wake() {
     say "waking $m ($harness in $dir) with a fresh conversation"
   fi
   HIVE_LAUNCH_NO_ATTACH=1 hive-launch "$m" "$harness" "$dir" -- "${args[@]}"
-  say "attach with: hive-attach $m"
+  attach "$m"
+}
+
+# Attach when run from a terminal; otherwise just say how.
+attach() {
+  if [[ -t 0 && -t 1 ]]; then
+    exec tmux attach-session -t "=hive-$1"
+  fi
+  say "attach with: hive-attach $1"
 }
 
 verb="${1:-}"; (($#)) && shift
