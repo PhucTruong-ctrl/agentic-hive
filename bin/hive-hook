@@ -139,6 +139,34 @@ session_header() {
   printf 'HIVE\nmember: %s\nnest: %s\n%s\n' "$m" "$nest" "$claims"
 }
 
+# Codex writes rate limits into its session log (token_count events). Copy the
+# latest non-empty snapshot to telemetry/quota/codex.json for the dashboard.
+# Throttled to once per 30s; failures ignored.
+codex_quota() {
+  local qf="$HIVE_ROOT/telemetry/quota/codex.json" log rl tmp
+  (($(date +%s) - $(stat -c %Y "$qf" 2>/dev/null || echo 0) >= 30)) || return 0
+  log=$(field .transcript_path)
+  [[ -r $log ]] || log=$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -printf '%T@ %p\n' 2>/dev/null |
+    sort -rn | head -1 | cut -d' ' -f2-)
+  [[ -r $log ]] || return 0
+  rl=$(tail -n 400 "$log" | grep -F '"rate_limits"' |
+    jq -c 'select(.payload.type == "token_count") | .payload.rate_limits
+           | select(.primary != null or .secondary != null)' 2>/dev/null | tail -n 1)
+  [[ -n $rl ]] || return 0
+  mkdir -p "${qf%/*}" 2>/dev/null
+  tmp=$(mktemp "$qf.XXXXXX" 2>/dev/null) || return 0
+  jq -n --argjson rl "$rl" --arg m "$m" --arg now "$(date --iso-8601=seconds)" '
+    def win($w): ($w.window_minutes // 0) as $mins
+      | {name: (if $mins == 300 then "5h" elif $mins == 10080 then "week"
+                elif $mins > 0 then "\($mins / 60 | floor)h" else "limit" end),
+         used_percent: $w.used_percent,
+         resets_at: ($w.resets_at | if type == "number" then todate else . end)};
+    {harness: "codex", updated_at: $now, reported_by: $m, rate_limits: $rl,
+     plan: $rl.plan_type,
+     windows: [($rl.primary | select(.) | win(.)), ($rl.secondary | select(.) | win(.))]}' \
+    >"$tmp" 2>/dev/null && chmod 0664 "$tmp" && mv -f "$tmp" "$qf" || rm -f "$tmp"
+}
+
 # Epoch of this member's most recent Room entry, or nothing.
 last_own_post() {
   tac "$HIVE_ROOT/ROOM.md" 2>/dev/null | gawk -v tail=" member=$m -->" '
@@ -177,9 +205,11 @@ case $event in
   PostToolUse)
     telemetry working
     deliver ""
+    [[ $harness == codex ]] && codex_quota
     ;;
   Stop)
     telemetry idle
+    [[ $harness == codex ]] && codex_quota
     ;;
   SessionEnd)
     telemetry ended

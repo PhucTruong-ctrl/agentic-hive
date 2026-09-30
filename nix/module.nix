@@ -195,6 +195,13 @@ in
 
     environment.etc."claude-code/managed-settings.json" = lib.mkIf cfg.claudeHooks {
       text = builtins.toJSON {
+        # Members' status line: Room generation and account quota; also records
+        # the quota for the dashboard. Prints just the model name elsewhere.
+        statusLine = {
+          type = "command";
+          command = "${cfg.package}/bin/hive-statusline";
+          padding = 0;
+        };
         hooks = {
           SessionStart = hook "SessionStart";
           UserPromptSubmit = hook "UserPromptSubmit";
@@ -211,6 +218,28 @@ in
     };
 
     environment.variables.HIVE_ROOT = cfg.root;
+
+    # Member sessions are tmux; make attaching and copying painless:
+    # mouse selection, OSC 52 clipboard (works over SSH), big scrollback.
+    programs.tmux = {
+      enable = true;
+      historyLimit = 100000;
+      terminal = "tmux-256color";
+      extraConfig = ''
+        set -g mouse on
+        set -g set-clipboard on
+        set -as terminal-features ',*:clipboard'
+        set -g allow-passthrough on
+        set -g focus-events on
+        set -sg escape-time 10
+        # Keep the selection after a mouse drag instead of jumping to the bottom.
+        unbind -T copy-mode MouseDragEnd1Pane
+        unbind -T copy-mode-vi MouseDragEnd1Pane
+        bind -T copy-mode MouseDragEnd1Pane send -X copy-selection-no-clear
+        bind -T copy-mode-vi MouseDragEnd1Pane send -X copy-selection-no-clear
+        set -g status-right ' #S · %H:%M '
+      '';
+    };
 
     programs.direnv = {
       enable = true;

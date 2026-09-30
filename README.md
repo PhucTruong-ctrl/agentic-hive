@@ -9,6 +9,8 @@ bin/hive-launch        tmux launcher: one session per member, runs as the `hive`
 bin/hive-dash          read-only terminal dashboard (SPEC §18): members, claims, Room, host
 bin/hive-web           the same dashboard over HTTP (systemd service hive-web, port 80, Tailscale only)
 share/dashboard.html   the page hive-web serves
+bin/hive-attach        jump into a member's tmux session (picker, prefix match, -r read-only)
+bin/hive-statusline    Claude Code status line for members; records account quota for the dashboards
 share/member-instruction.md   the §13 instruction, appended to Claude's system prompt
 nix/module.nix         NixOS module (the "tree")
 nix/package.nix        Hive Core package
@@ -38,7 +40,7 @@ sudo -u hive -i codex login
 ```
 hive-launch claude-opus-game claude /srv/hive/projects/game   # start or attach
 hive-launch --list
-sudo -u hive -i tmux attach -t hive-claude-opus-game
+hive-attach [member]        # or -r to watch read-only; detach with Ctrl-b d; mouse-drag copies to your clipboard
 hive observe                                                    # read-only view
 hive-dash                                                       # live dashboard (q quits); --once for a snapshot
 # web dashboard: http://<tailscale-ip>/  (services.agentic-hive.web.{enable,port,openFirewallOn})

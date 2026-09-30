@@ -62,6 +62,15 @@ host_line() {
     "$(awk -v t="$mem_t" 'BEGIN {print t / 1048576}')" "$disk"
 }
 
+quota_line() {
+  local f line
+  for f in "$HIVE_ROOT"/telemetry/quota/*.json; do
+    [[ -r $f ]] || continue
+    line=$(jq -r '"\(.harness): " + ([.windows[]? | "\(.name) \(.used_percent // 0 | floor)%"] | join(" · "))' "$f" 2>/dev/null) || continue
+    printf 'QUOTA %s  %s(as of %s)%s\n' "$line" "$D" "$(ago "$(jq -r .updated_at "$f")")" "$R"
+  done
+}
+
 # member -> "state|pid|harness|last|cwd|branch|tool|delivered"
 member_row() {
   local m="$1" t="$HIVE_ROOT/telemetry/members/$1.json" j pid status harness last state
@@ -96,6 +105,7 @@ render() {
   w=$(cols)
   printf '%sHIVE%s  %s  room generation %s%s%s  %s%s%s\n' "$B" "$R" "$HIVE_ROOT" "$B" "$g" "$R" "$D" "$(date +%T)" "$R"
   host_line
+  quota_line
   echo
 
   printf '%sMEMBERS%s\n' "$B" "$R"

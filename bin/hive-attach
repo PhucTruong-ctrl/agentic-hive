@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# hive-attach — jump into a member's tmux session (Beekeeper convenience).
+#
+#   hive-attach                 pick from running members
+#   hive-attach <member>        attach (hive-<member> or a unique prefix)
+#   hive-attach -r <member>     read-only: watch without typing
+#   hive-attach -l              list sessions
+#
+# Member sessions live on the `hive` user's tmux server; this re-executes
+# through sudo when needed. Detach with the tmux prefix then d (Ctrl-b d).
+# Copying: drag with the mouse; the selection goes to your terminal's
+# clipboard (OSC 52). Hold Shift to use the terminal's own selection instead.
+set -euo pipefail
+
+HIVE_USER="${HIVE_USER:-hive}"
+die() { printf 'hive-attach: %s\n' "$*" >&2; exit 1; }
+
+if [[ $(id -un) != "$HIVE_USER" ]]; then
+  exec sudo -u "$HIVE_USER" -- env TERM="${TERM:-xterm-256color}" "$0" "$@"
+fi
+unset TMUX # we are attaching to a different tmux server than any we sit in
+
+ro=()
+case ${1:-} in
+  -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -l | --list)
+    tmux list-sessions -F '#{session_name}	#{?session_attached,attached,-}	#{t:session_activity}' 2>/dev/null |
+      grep '^hive-' | sed 's/^hive-//' | column -t -s $'\t' || echo "(no member sessions)"
+    exit 0 ;;
+  -r | --read-only) ro=(-r); shift ;;
+esac
+
+mapfile -t sessions < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^hive-' | sed 's/^hive-//' || true)
+((${#sessions[@]})) || die "no member sessions running (start one with hive-launch <member>)"
+
+want="${1:-}"
+if [[ -z $want ]]; then
+  if ((${#sessions[@]} == 1)); then
+    want=${sessions[0]}
+  elif command -v fzf >/dev/null && [[ -t 0 ]]; then
+    want=$(printf '%s\n' "${sessions[@]}" | fzf --height=~40% --prompt='member> ') || exit 0
+  else
+    PS3='member> '
+    select want in "${sessions[@]}"; do [[ -n $want ]] && break; done
+  fi
+fi
+
+match=()
+for s in "${sessions[@]}"; do
+  [[ $s == "$want" ]] && { match=("$s"); break; }
+  [[ $s == "$want"* ]] && match+=("$s")
+done
+((${#match[@]} == 1)) || die "'$want' matches ${#match[@]} sessions: ${sessions[*]}"
+
+exec tmux attach-session "${ro[@]}" -t "=hive-${match[0]}"

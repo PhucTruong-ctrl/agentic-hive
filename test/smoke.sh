@@ -115,4 +115,17 @@ out=$(hook erin.x UserPromptSubmit | jq -r .hookSpecificOutput.additionalContext
 check "member names match exactly" grep -q 'no Room post from you yet' <<<"$out"
 check "nudge disabled by HIVE_QUIET_MINUTES=0" test -z "$(HIVE_QUIET_MINUTES=0 hook erin UserPromptSubmit)"
 
+# Quota: Claude via the status line, Codex via its session log.
+reset=$(( $(date +%s) + 7200 ))
+out=$(HIVE_MEMBER=alice hive-statusline <<<"{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":42.4,\"resets_at\":$reset},\"seven_day\":{\"used_percentage\":18,\"resets_at\":$reset}}}")
+check "statusline shows member and quota" grep -q 'alice · room .* 5h 42% · wk 18% · Opus' <<<"$out"
+check "claude quota recorded" test "$(jq -r '.windows[0].name + " " + (.windows[0].used_percent|tostring)' "$HIVE_ROOT/telemetry/quota/claude.json")" = "5h 42.4"
+check "statusline outside hive is model only" test "$(HIVE_MEMBER= hive-statusline <<<'{"model":{"display_name":"Opus"}}')" = Opus
+mkdir -p "$HIVE_ROOT/cx/sessions/2026/09/30"
+printf '%s\n' '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":12.5,"window_minutes":300,"resets_at":1790800000},"secondary":{"used_percent":64,"window_minutes":10080,"resets_at":1791200000},"plan_type":"plus"}}}' \
+  >"$HIVE_ROOT/cx/sessions/2026/09/30/rollout-x.jsonl"
+CODEX_HOME="$HIVE_ROOT/cx" HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
+check "codex quota recorded" test "$(jq -r '[.windows[] | "\(.name)=\(.used_percent)"] | join(",")' "$HIVE_ROOT/telemetry/quota/codex.json")" = "5h=12.5,week=64"
+check "dashboard shows quota" grep -q 'QUOTA codex: 5h 12% · week 64%' <(hive-dash --once)
+
 echo "all $pass checks passed"
