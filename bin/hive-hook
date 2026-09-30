@@ -42,7 +42,7 @@ harness_pid() { # walk up from the hook's parent to the harness process
   for i in 1 2 3 4 5; do
     [[ -r /proc/$p/comm ]] || break
     comm=$(cat "/proc/$p/comm")
-    [[ $comm == "$harness"* || $comm == node* ]] && { printf '%s' "$p"; return; }
+    [[ $comm == "$harness"* || $comm == ".$harness"* || $comm == node* ]] && { printf '%s' "$p"; return; }
     p=$(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) || break
     [[ $p -gt 1 ]] || break
   done

@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# hive-dash — Beekeeper instrument panel (SPEC §18). Read-only.
+#
+#   hive-dash            refresh every 3s (q to quit)
+#   hive-dash --once     print one snapshot
+#   hive-dash -n SECS    refresh interval
+#
+# Reads $HIVE_ROOT files and /proc only. Telemetry is a hint; process state
+# wins: a member whose recorded pid is gone is shown as dead.
+set -uo pipefail
+
+HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+interval=3 once=0
+while (($#)); do
+  case $1 in
+    --once) once=1; shift ;;
+    -n) interval="${2:?-n needs seconds}"; shift 2 ;;
+    -h | --help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "hive-dash: unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+[[ -r $HIVE_ROOT/.room-generation ]] || { echo "hive-dash: cannot read $HIVE_ROOT (hive group? try: newgrp hive)" >&2; exit 1; }
+
+if [[ -t 1 ]]; then
+  B=$'\e[1m' D=$'\e[2m' R=$'\e[0m' GRN=$'\e[32m' YEL=$'\e[33m' RED=$'\e[31m' CYN=$'\e[36m'
+else
+  B='' D='' R='' GRN='' YEL='' RED='' CYN=''
+fi
+
+cols() { tput cols 2>/dev/null || echo 100; }
+
+ago() { # iso-timestamp -> "12s" / "4m" / "3h" / "2d"
+  local t s
+  t=$(date -d "$1" +%s 2>/dev/null) || { printf '?'; return; }
+  s=$(($(date +%s) - t))
+  if ((s < 90)); then printf '%ds' "$s"
+  elif ((s < 5400)); then printf '%dm' $((s / 60))
+  elif ((s < 172800)); then printf '%dh' $((s / 3600))
+  else printf '%dd' $((s / 86400)); fi
+}
+
+prev_idle=0 prev_total=0
+cpu_pct() {
+  local _ user nice sys idle iow irq sirq steal total didle dtotal
+  read -r _ user nice sys idle iow irq sirq steal _ </proc/stat
+  idle=$((idle + iow)); total=$((user + nice + sys + idle + irq + sirq + steal))
+  didle=$((idle - prev_idle)); dtotal=$((total - prev_total))
+  prev_idle=$idle prev_total=$total
+  ((dtotal > 0)) && printf '%d%%' $((100 * (dtotal - didle) / dtotal)) || printf '–'
+}
+
+host_line() {
+  local mem_t mem_a load disk
+  mem_t=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
+  mem_a=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+  load=$(cut -d' ' -f1-3 /proc/loadavg)
+  disk=$(df -h --output=used,size,pcent "$HIVE_ROOT" 2>/dev/null | awk 'NR==2 {print $1 "/" $2 " (" $3 ")"}')
+  printf 'HOST  cpu %s  load %s  ram %.1f/%.1f GiB  disk %s\n' \
+    "$(cpu_pct)" "$load" \
+    "$(awk -v t="$mem_t" -v a="$mem_a" 'BEGIN {print (t - a) / 1048576}')" \
+    "$(awk -v t="$mem_t" 'BEGIN {print t / 1048576}')" "$disk"
+}
+
+# member -> "state|pid|harness|last|cwd|branch|tool|delivered"
+member_row() {
+  local m="$1" t="$HIVE_ROOT/telemetry/members/$1.json" j pid status harness last state
+  j=$(cat "$t" 2>/dev/null) || j='{}'
+  pid=$(jq -r '.pid // empty' <<<"$j" 2>/dev/null)
+  status=$(jq -r '.status // empty' <<<"$j" 2>/dev/null)
+  harness=$(jq -r '.harness // "-"' <<<"$j" 2>/dev/null)
+  last=$(jq -r '.last_activity // empty' <<<"$j" 2>/dev/null)
+
+  if [[ -z $j || $j == '{}' ]]; then
+    state=never
+  elif [[ -n $pid && -d /proc/$pid ]] && [[ $(cat "/proc/$pid/comm" 2>/dev/null) == @($harness*|node*|.$harness*) ]]; then
+    if [[ $status == working && -n $last ]] && (($(date +%s) - $(date -d "$last" +%s) < 120)); then
+      state=working
+    else
+      state=idle
+    fi
+  else
+    state=dead
+  fi
+  jq -r --arg state "$state" '[
+      $state, (.pid // "-" | tostring), (.harness // "-"), (.last_activity // ""),
+      (.cwd // "-"), (.git_branch // "-"), (.last_tool // "-"),
+      (.room_generation_delivered // "-" | tostring)
+    ] | join("|")' <<<"$j" 2>/dev/null || printf '%s|-|-||-|-|-|-\n' "$state"
+}
+
+render() {
+  local g w m row state pid harness last cwd branch tool delivered color any d
+  shopt -s extglob
+  g=$(cat "$HIVE_ROOT/.room-generation" 2>/dev/null || echo '?')
+  w=$(cols)
+  printf '%sHIVE%s  %s  room generation %s%s%s  %s%s%s\n' "$B" "$R" "$HIVE_ROOT" "$B" "$g" "$R" "$D" "$(date +%T)" "$R"
+  host_line
+  echo
+
+  printf '%sMEMBERS%s\n' "$B" "$R"
+  printf '%s  %-22s %-8s %-7s %7s %6s %-4s  %-24s %s%s\n' "$D" MEMBER STATE HARNESS PID LAST SEEN BRANCH WORKTREE "$R"
+  any=0
+  for d in "$HIVE_ROOT"/members/*/; do
+    [[ -d $d ]] || continue
+    any=1
+    m=$(basename "$d")
+    IFS='|' read -r state pid harness last cwd branch tool delivered <<<"$(member_row "$m")"
+    case $state in
+      working) color=$GRN ;; idle) color=$YEL ;; dead) color=$RED ;; *) color=$D ;;
+    esac
+    cwd=${cwd#"$HIVE_ROOT"/}
+    printf '  %-22s %s%-8s%s %-7s %7s %6s %-4s  %-24s %s\n' \
+      "${m:0:22}" "$color" "$state" "$R" "$harness" "$pid" \
+      "$([[ -n $last ]] && ago "$last" || echo -)" \
+      "$([[ $delivered =~ ^[0-9]+$ && $g =~ ^[0-9]+$ && $delivered -lt $g ]] && echo "+$((g - delivered))" || echo ok)" \
+      "${branch:0:24}" "${cwd:0:$((w > 80 ? w - 80 : 20))}"
+  done
+  ((any)) || printf '  %s(no members yet — hive-launch <member>)%s\n' "$D" "$R"
+  echo
+
+  printf '%sCLAIMS%s\n' "$B" "$R"
+  any=0
+  for d in "$HIVE_ROOT"/claims/*/; do
+    [[ -d $d ]] || continue
+    any=1
+    printf '  %-22s -> %s  %s(%s ago)%s\n' \
+      "$(cat "$d/owner" 2>/dev/null || echo '?')" "$(cat "$d/resource" 2>/dev/null)" \
+      "$D" "$(ago "$(cat "$d/created-at" 2>/dev/null)")" "$R"
+  done
+  ((any)) || printf '  %s(none)%s\n' "$D" "$R"
+  echo
+
+  printf '%sROOM%s %s(last 8)%s\n' "$B" "$R" "$D" "$R"
+  local since=$((g - 8)); ((since < 0)) && since=0
+  hive _entries "$since" "" 0 2>/dev/null | cut -c1-"$w" \
+    | sed -E "s/^(\[[0-9]+\] )([^ ]+)/${CYN}\1${B}\2${R}/" \
+    || printf '  %s(empty)%s\n' "$D" "$R"
+  [[ $g == 0 ]] && printf '  %s(empty)%s\n' "$D" "$R"
+  return 0
+}
+
+cpu_pct >/dev/null # prime the CPU delta
+
+if ((once)); then
+  sleep 0.3
+  render
+  exit 0
+fi
+
+trap 'tput cnorm 2>/dev/null; tput rmcup 2>/dev/null; exit 0' INT TERM EXIT
+tput smcup 2>/dev/null; tput civis 2>/dev/null
+while :; do
+  frame=$(render)
+  printf '\e[H\e[2J%s\n\n%sq quit · refresh %ss · read-only%s' "$frame" "$D" "$interval" "$R"
+  read -rs -n1 -t "$interval" key && [[ $key == q ]] && exit 0
+done

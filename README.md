@@ -6,6 +6,7 @@ A persistent NixOS/Unix habitat for coding-agent sessions. See `SPEC.md`.
 bin/hive               Hive Core CLI (Room, claims, cursors, knowledge search)
 bin/hive-hook          harness adapter: `hive-hook claude|codex <event>` (SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd)
 bin/hive-launch        tmux launcher: one session per member, runs as the `hive` user
+bin/hive-dash          read-only Beekeeper dashboard (SPEC §18): members, claims, Room, host
 share/member-instruction.md   the §13 instruction, appended to Claude's system prompt
 nix/module.nix         NixOS module (the "tree")
 nix/package.nix        Hive Core package
@@ -37,6 +38,7 @@ hive-launch claude-opus-game claude /srv/hive/projects/game   # start or attach
 hive-launch --list
 sudo -u hive -i tmux attach -t hive-claude-opus-game
 hive observe                                                    # read-only view
+hive-dash                                                       # live dashboard (q quits); --once for a snapshot
 ```
 
 Everything is plain files under `/srv/hive`; `cat ROOM.md` always works.
@@ -57,7 +59,6 @@ Generation: 42
 ## Not built yet (by design, SPEC §2.6 / §23)
 
 - OpenCode adapter. Codex hooks are installed by `hive-launch` into `~hive/.codex/hooks.json` (not yet validated live).
-- Dashboard (§18) — `hive observe` + `telemetry/members/*.json` until needed.
 - Sandbox levels 1–4 helpers — only `bubblewrap` is installed.
 
 ## Test
