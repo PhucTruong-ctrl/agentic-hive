@@ -96,4 +96,23 @@ check "hook silent without member" test -z "$(HIVE_MEMBER= hive-hook claude Post
 hive observe >/dev/null
 check "room --last" test "$(hive room --last 3 | grep -c '^\[')" = 3
 
+# Quiet nudge on Beekeeper prompts (not on tool calls).
+hive join dave >/dev/null
+out=$(hook dave UserPromptSubmit | jq -r .hookSpecificOutput.additionalContext)
+check "nudge when never posted" grep -q 'no Room post from you yet' <<<"$out"
+check "no nudge on tool calls" bash -c '! grep -q "no Room post" <<<"$1"' _ "$(hook dave PostToolUse)"
+HIVE_MEMBER=dave hive say "starting X — scripts/x.gd" >/dev/null
+check "no nudge right after posting" test -z "$(hook dave UserPromptSubmit)"
+hive join erin >/dev/null; hive join erin.x >/dev/null
+old=$(date -d '-45 min' --iso-8601=seconds)
+printf '<!-- hive:entry gen=900 member=erin -->\n## %s — erin\n\nold\n\nGeneration: 900\n\n' "$old" >>"$HIVE_ROOT/ROOM.md"
+echo 900 >"$HIVE_ROOT/.room-generation"
+echo 900 >"$HIVE_ROOT/members/erin/state/last-delivered-generation"
+echo 900 >"$HIVE_ROOT/members/erin.x/state/last-delivered-generation"
+out=$(hook erin UserPromptSubmit | jq -r .hookSpecificOutput.additionalContext)
+check "nudge after 45m silence" grep -qE 'no Room post from you in 4[45]m' <<<"$out"
+out=$(hook erin.x UserPromptSubmit | jq -r .hookSpecificOutput.additionalContext)
+check "member names match exactly" grep -q 'no Room post from you yet' <<<"$out"
+check "nudge disabled by HIVE_QUIET_MINUTES=0" test -z "$(HIVE_QUIET_MINUTES=0 hook erin UserPromptSubmit)"
+
 echo "all $pass checks passed"

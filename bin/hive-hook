@@ -139,12 +139,42 @@ session_header() {
   printf 'HIVE\nmember: %s\nnest: %s\n%s\n' "$m" "$nest" "$claims"
 }
 
+# Epoch of this member's most recent Room entry, or nothing.
+last_own_post() {
+  tac "$HIVE_ROOT/ROOM.md" 2>/dev/null | gawk -v tail=" member=$m -->" '
+    /^## / { ts = substr($0, 4); sub(/ — .*$/, "", ts); next }
+    /^<!-- hive:entry gen=[0-9]+ member=/ {
+      if (substr($0, length($0) - length(tail) + 1) == tail) { print ts; exit }
+    }' | { read -r ts && date -d "$ts" +%s 2>/dev/null; }
+}
+
+# On a Beekeeper prompt, a one-line reminder when this member has been silent
+# in the Room for a while (incident 2026-09-30: members started new work
+# without announcing it). Deterministic: time since own last post only.
+quiet_nudge() {
+  local quiet="${HIVE_QUIET_MINUTES:-20}" last mins since
+  ((quiet > 0)) || return 0
+  last=$(last_own_post)
+  if [[ -z $last ]]; then
+    since="yet"
+  else
+    mins=$((($(date +%s) - last) / 60))
+    ((mins >= quiet)) || return 0
+    since="in ${mins}m"
+  fi
+  printf 'HIVE: no Room post from you %s. If this prompt starts new work or changes direction, post one line first: hive say "<what> — <where>".\n' "$since"
+}
+
 case $event in
   SessionStart)
     telemetry working
     deliver "$(session_header)"
     ;;
-  UserPromptSubmit | PostToolUse)
+  UserPromptSubmit)
+    telemetry working
+    deliver "$(quiet_nudge)"
+    ;;
+  PostToolUse)
     telemetry working
     deliver ""
     ;;
