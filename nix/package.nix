@@ -35,7 +35,7 @@ stdenvNoCC.mkDerivation {
 
   installPhase = ''
     runHook preInstall
-    install -Dm755 -t $out/bin bin/hive bin/hive-hook bin/hive-launch bin/hive-dash bin/hive-web bin/hive-attach bin/hive-statusline
+    install -Dm755 -t $out/bin bin/hive bin/hive-hook bin/hive-launch bin/hive-dash bin/hive-web bin/hive-attach bin/hive-statusline bin/hive-session
     install -Dm644 -t $out/share/agentic-hive share/member-instruction.md share/dashboard.html
     patchShebangs $out/bin
     for f in $out/bin/*; do
@@ -53,7 +53,7 @@ stdenvNoCC.mkDerivation {
             tmux
           ]
         }" \
-        --set-default HIVE_SHARE "$out/share/agentic-hive"
+        --set HIVE_SHARE "$out/share/agentic-hive"
     done
     runHook postInstall
   '';

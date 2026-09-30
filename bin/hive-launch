@@ -79,13 +79,19 @@ hive join "$member" >/dev/null
 session="hive-$member"
 
 if ! tmux has-session -t "=$session" 2>/dev/null; then
+  # Launch record: lets hive-session wake the member in the same place.
+  jq -n --arg h "$harness" --arg d "$dir" --arg now "$(date --iso-8601=seconds)" \
+    '{harness: $h, dir: $d, launched_at: $now}' >"$HIVE_ROOT/members/$member/state/launch.json"
   tmux new-session -d -s "$session" -c "$dir" \
     -e "HIVE_MEMBER=$member" \
     -e "HIVE_ROOT=$HIVE_ROOT" \
+    -e "HIVE_SHARE=$SHARE" \
     -e "PATH=$PATH:$HIVE_ROOT/tools/bin" \
     -- "$0" --run "$harness" "$@"
   echo "hive-launch: started $session ($harness in $dir)"
 fi
+
+[[ -n ${HIVE_LAUNCH_NO_ATTACH:-} ]] && exit 0
 
 if [[ -n ${TMUX:-} ]]; then
   exec tmux switch-client -t "=$session"

@@ -90,7 +90,10 @@
   .q .bar.warm i { background: var(--idle); }
   .q .bar.ok i { background: var(--working); }
   .q .reset { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .attach { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+  .cmds { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+  .attach { display: flex; gap: 6px; align-items: center; }
+  .attach .verb { width: 48px; flex: none; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .dead .attach .verb, .never .attach .verb { color: var(--accent); }
   .attach code { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; background: var(--chip);
                  padding: 3px 6px; border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .attach button { font: inherit; font-size: 11.5px; border: 1px solid var(--line); background: var(--panel);
@@ -164,6 +167,21 @@ const bar = (id, pct) => { $(id).style.width = Math.max(0, Math.min(100, pct)) +
 
 let lastGen = null;
 
+// Copyable commands per member state. The page never runs anything itself.
+function commands(m) {
+  const n = m.member;
+  if (m.state === "working" || m.state === "idle") return [
+    ["attach", `hive-attach ${n}`],
+    ["restart", `hive-session restart ${n}` + (m.state === "working" ? " --force" : "")],
+    ["kill", `hive-session kill ${n}` + (m.state === "working" ? " --force" : "")],
+  ];
+  if (m.state === "dead") return [
+    ["wake", `hive-session wake ${n}`],
+    ["fresh", `hive-session wake ${n} --fresh`],
+  ];
+  return [["start", `hive-session wake ${n} --fresh`]];
+}
+
 function render(d) {
   const h = d.host;
   $("host-name").textContent = h.hostname + " · " + d.hive_root;
@@ -190,7 +208,9 @@ function render(d) {
         <dt>room</dt><dd>${m.undelivered ? `<span class="unseen">${m.undelivered} not yet delivered</span>` : "up to date"}</dd>
         ${m.notes.length ? `<dt>notes</dt><dd>${m.notes.map(esc).join(", ")}</dd>` : ""}
       </dl>
-      ${m.state === "working" || m.state === "idle" ? `<div class="attach"><code>hive-attach ${esc(m.member)}</code><button data-copy="hive-attach ${esc(m.member)}">copy</button></div>` : ""}
+      <div class="cmds">${commands(m).map(([label, cmd]) => `
+        <div class="attach"><span class="verb">${label}</span><code title="${esc(cmd)}">${esc(cmd)}</code><button data-copy="${esc(cmd)}">copy</button></div>`).join("")}
+      </div>
     </div>`).join("") : `<div class="empty">No members yet — start one with <code>hive-launch &lt;member&gt;</code>.</div>`;
 
   const until = iso => {
