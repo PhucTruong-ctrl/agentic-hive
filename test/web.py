@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -39,6 +40,14 @@ class DashboardControls(unittest.TestCase):
         responses = []
         handler._send = lambda status, data, _: responses.append((status, json.loads(data)))
         handler.do_POST()
+        return responses[0]
+
+    def get_json(self, path):
+        handler = object.__new__(web.Handler)
+        handler.path = path
+        handler._send = lambda status, data, _: responses.append((status, json.loads(data)))
+        responses = []
+        handler.do_GET()
         return responses[0]
 
     def test_room_all_posts_once_and_sends_to_every_agent(self):
@@ -92,6 +101,49 @@ class DashboardControls(unittest.TestCase):
             status, _ = self.request("/api/steer", {"member": "alice", "prompt": "do work"})
         self.assertEqual(status, 200)
         run.assert_called_once_with("hive-member", "send", "alice", "do work")
+
+    def test_git_projects_include_projects_without_live_members(self):
+        repo = self.root / "projects" / "sample"
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+        (repo / "README.md").write_text("first\n")
+        subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+                        "commit", "-qm", "Initial"], check=True)
+        (repo / "README.md").write_text("changed\n")
+        (repo / "new.txt").write_text("new\n")
+        projects = web.git_projects([])
+        self.assertEqual(len(projects), 1)
+        self.assertEqual(projects[0]["name"], "sample")
+        self.assertEqual((projects[0]["modified"], projects[0]["untracked"]), (1, 1))
+        self.assertEqual(projects[0]["commit"]["subject"], "Initial")
+
+    def test_hive_files_list_and_preview_with_path_boundaries(self):
+        note = self.root / "members" / "alice" / "notes" / "plan.md"
+        note.parent.mkdir()
+        note.write_text("Only relevant notes are read.\n")
+        status, listing = self.get_json("/api/files?path=members/alice/notes")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["entries"][0]["name"], "plan.md")
+        status, preview = self.get_json("/api/file?path=members/alice/notes/plan.md")
+        self.assertEqual(status, 200)
+        self.assertEqual(preview["text"], note.read_text())
+        handler = object.__new__(web.Handler)
+        handler.path = "/api/file?path=members/alice/notes/plan.md&download=1"
+        handler.command = "GET"
+        handler.wfile = io.BytesIO()
+        headers = {}
+        handler.send_response = lambda code: headers.update(status=code)
+        handler.send_header = lambda name, value: headers.update({name: value})
+        handler.end_headers = lambda: None
+        handler.do_GET()
+        self.assertEqual(headers["status"], 200)
+        self.assertEqual(handler.wfile.getvalue(), note.read_bytes())
+        with self.assertRaises(ValueError):
+            web.browser_path("members/alice/notes/../../bob/state/launch.json")
+        (note.parent / "outside").symlink_to(Path(self.temp.name).parent)
+        with self.assertRaises(ValueError):
+            web.browser_path("members/alice/notes/outside")
 
     def test_fragmented_websocket_input(self):
         class OneByteSocket:

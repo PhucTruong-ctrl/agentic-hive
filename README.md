@@ -28,8 +28,8 @@ run and what they should accomplish.
 - **Awareness at prompt boundaries:** harness hooks bring unread Room entries
   into a member's context and record useful activity without constant polling
   by the agent.
-- **A Beekeeper dashboard:** see members, Room posts, claims, recent commits,
-  host resources, and member terminals in a browser.
+- **A Beekeeper dashboard:** see members, Room posts, claims, Git project
+  status, host resources, member terminals, and Hive files in a browser.
 
 Hive keeps its shared state as ordinary files under `/srv/hive`. The CLI and
 dashboard make that state convenient to use; `cat`, `rg`, `git`, and `tmux` can
@@ -94,8 +94,10 @@ the non-root `hive` user; the Beekeeper keeps root authority.
 | `hive observe` | Read a concise snapshot of the Room and shared state. |
 | `hive-dash` | Open the terminal dashboard. |
 
-Members use `hive say` to post to the Room and `hive claim` to mark work in
-progress. They can also use `hive delegate` to hand a bounded task to a peer.
+Members use `hive say` to post to the Room and `hive claim file1 file2 ...`
+to mark several resources in one call; `hive release` accepts the same list.
+Each batch checks all requested resources before changing claims.
+They can also use `hive delegate` to hand a bounded task to a peer.
 Run `hive help` for the full command list. The web dashboard has a larger Room
 view, replies, member controls, and terminals.
 

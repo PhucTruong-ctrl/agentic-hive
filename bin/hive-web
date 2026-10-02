@@ -5,6 +5,8 @@
 
 GET /            the dashboard page (polls /api/state)
 GET /api/state   JSON snapshot of members, claims, Room and host
+GET /api/files   Browse Room, shared files, and member nests
+GET /api/file    Preview or download one allowed file
 
 Runs as the unprivileged hive user. Telemetry is a hint; process state wins.
 """
@@ -31,7 +33,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HIVE_ROOT = Path(os.environ.get("HIVE_ROOT", "/srv/hive"))
 SHARE = Path(os.environ.get("HIVE_SHARE", Path(__file__).resolve().parent.parent / "share/agentic-hive"))
@@ -388,29 +390,56 @@ def room(limit=ROOM_ENTRIES):
     return entries if limit is None else entries[-limit:]
 
 
-def git_activity(paths, limit=8):
-    """Recent commits across the worktrees members are in (optional, SPEC §18)."""
+PROJECT_CACHE = {"key": None, "at": 0, "value": []}
+PROJECT_LOCK = threading.Lock()
+
+
+def git_projects(paths):
+    """Status for project roots and member worktrees, including idle members."""
+    base = HIVE_ROOT / "projects"
+    candidates = [str(base)]
+    if base.is_dir():
+        candidates += [str(p) for p in sorted(base.iterdir()) if p.is_dir() and not p.name.startswith(".")][:32]
+    candidates += [p for p in paths if p]
     seen, out = set(), []
-    for p in paths:
-        if not p or not os.path.isdir(p):
-            continue
+
+    def git(path, *args):
         try:
-            top = subprocess.run(["git", "-C", p, "rev-parse", "--show-toplevel"],
-                                 capture_output=True, text=True, timeout=3).stdout.strip()
-            if not top or top in seen:
-                continue
-            seen.add(top)
-            log = subprocess.run(["git", "-C", top, "log", "-n", str(limit), "--date=iso-strict",
-                                  "--format=%h%x1f%an%x1f%ad%x1f%s%x1f%D"],
-                                 capture_output=True, text=True, timeout=3).stdout
+            result = subprocess.run(["git", "-C", path, *args], capture_output=True,
+                                    text=True, timeout=4)
+            return result.stdout.rstrip("\n") if result.returncode == 0 else None
         except (OSError, subprocess.SubprocessError):
+            return None
+
+    for candidate in candidates:
+        if not os.path.isdir(candidate):
             continue
-        for line in log.splitlines():
-            h, author, date, subject, refs = (line.split("\x1f") + [""] * 5)[:5]
-            out.append({"repo": os.path.basename(top), "hash": h, "author": author,
-                        "date": date, "subject": subject, "refs": refs})
-    out.sort(key=lambda c: c["date"], reverse=True)
-    return out[:limit]
+        top = git(candidate, "rev-parse", "--show-toplevel")
+        if not top or top in seen:
+            continue
+        seen.add(top)
+        branch = git(top, "symbolic-ref", "--quiet", "--short", "HEAD") or "(detached)"
+        status = git(top, "status", "--porcelain=v1", "--untracked-files=normal")
+        lines = status.splitlines() if status is not None else []
+        staged = sum(line[:1] not in (" ", "?") for line in lines) if status is not None else None
+        modified = sum(line[1:2] not in (" ", "?") for line in lines) if status is not None else None
+        untracked = sum(line.startswith("??") for line in lines) if status is not None else None
+        head = git(top, "log", "-1", "--date=iso-strict", "--format=%h%x1f%ad%x1f%s")
+        commit = dict(zip(("hash", "date", "subject"), head.split("\x1f"))) if head else None
+        counts = (git(top, "rev-list", "--left-right", "--count", "HEAD...@{upstream}") or "").split()
+        behind, ahead = (int(counts[0]), int(counts[1])) if len(counts) == 2 else (None, None)
+        out.append({"name": os.path.basename(top), "path": top, "branch": branch,
+                    "staged": staged, "modified": modified, "untracked": untracked,
+                    "ahead": ahead, "behind": behind, "commit": commit})
+    return sorted(out, key=lambda p: p["path"])
+
+
+def cached_git_projects(paths):
+    key = (str(HIVE_ROOT), tuple(sorted(paths)))
+    with PROJECT_LOCK:
+        if PROJECT_CACHE["key"] != key or time.monotonic() - PROJECT_CACHE["at"] > 10:
+            PROJECT_CACHE.update(key=key, at=time.monotonic(), value=git_projects(paths))
+        return PROJECT_CACHE["value"]
 
 
 def quota():
@@ -448,7 +477,7 @@ def state():
         "claims": claims(),
         "quota": quota(),
         "room": all_room[-ROOM_ENTRIES:],
-        "git": git_activity([m["cwd"] for m in ms if m["state"] in ("working", "idle")]),
+        "projects": cached_git_projects([m["cwd"] for m in ms]),
     }
 
 
@@ -473,6 +502,60 @@ def room_targets(body):
     if unknown:
         raise ValueError("unknown member: " + ", ".join(sorted(unknown)))
     return sorted(names if "all" in mentions else mentions)
+
+
+def browser_path(path):
+    """Resolve only the shared Room/files and member nest folders."""
+    parts = path.split("/") if path else []
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError("invalid file path")
+    if not parts or parts == ["members"] or (len(parts) == 2 and parts[0] == "members" and MEMBER_RE.fullmatch(parts[1])):
+        return None
+    if parts[0] == "members":
+        if len(parts) < 3 or not MEMBER_RE.fullmatch(parts[1]) or parts[2] not in ("notes", "artifacts", "scratch", "state"):
+            raise ValueError("file path is outside member files")
+        base = HIVE_ROOT.joinpath(*parts[:3])
+    elif parts[0] in ("knowledge", "artifacts"):
+        base = HIVE_ROOT / parts[0]
+    elif parts == ["ROOM.md"]:
+        base = HIVE_ROOT / "ROOM.md"
+    else:
+        raise ValueError("file path is outside Hive files")
+    target = HIVE_ROOT.joinpath(*parts)
+    if not base.resolve().is_relative_to(HIVE_ROOT.resolve()) or not target.resolve().is_relative_to(base.resolve()):
+        raise ValueError("file path leaves its allowed folder")
+    return target
+
+
+def file_entries(path):
+    browser_path(path)
+    if not path:
+        return [{"name": n, "path": n, "type": t} for n, t in
+                (("ROOM.md", "file"), ("knowledge", "dir"), ("artifacts", "dir"), ("members", "dir"))]
+    if path == "members":
+        root = HIVE_ROOT / "members"
+        return [{"name": p.name, "path": f"members/{p.name}", "type": "dir"}
+                for p in sorted(root.iterdir()) if p.is_dir() and MEMBER_RE.fullmatch(p.name)] if root.is_dir() else []
+    parts = path.split("/")
+    if len(parts) == 2 and parts[0] == "members":
+        return [{"name": n, "path": f"{path}/{n}", "type": "dir"}
+                for n in ("notes", "artifacts", "scratch", "state") if (HIVE_ROOT / path / n).is_dir()]
+    directory = browser_path(path)
+    if not directory.is_dir():
+        raise ValueError("folder not found")
+    entries = []
+    for child in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:300]:
+        try:
+            browser_path(f"{path}/{child.name}")
+            if not (child.is_dir() or child.is_file()):
+                continue
+            stat = child.stat()
+        except (OSError, ValueError):
+            continue
+        entries.append({"name": child.name, "path": f"{path}/{child.name}",
+                        "type": "dir" if child.is_dir() else "file", "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")})
+    return entries
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -519,6 +602,35 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(state()), "application/json")
             except Exception as e:  # never take the page down; report instead
                 self._send(500, json.dumps({"error": str(e)}), "application/json")
+        elif path in ("/api/files", "/api/file"):
+            try:
+                rel = parse_qs(url.query).get("path", [""])[0]
+                if path == "/api/files":
+                    self._send(200, json.dumps({"path": rel, "entries": file_entries(rel)}), "application/json")
+                    return
+                target = browser_path(rel)
+                if target is None or not target.is_file():
+                    raise ValueError("file not found")
+                if parse_qs(url.query).get("download") == ["1"]:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(target.stat().st_size))
+                    self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(target.name))
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        with target.open("rb") as source:
+                            shutil.copyfileobj(source, self.wfile)
+                    return
+                with target.open("rb") as source:
+                    data = source.read(131073)
+                binary = b"\0" in data or data.decode("utf-8", errors="replace").count("\ufffd") > 10
+                self._send(200, json.dumps({"path": rel, "text": "" if binary else data[:131072].decode("utf-8", errors="replace"),
+                                            "binary": binary, "truncated": len(data) > 131072,
+                                            "size": target.stat().st_size}), "application/json")
+            except (OSError, ValueError) as exc:
+                self._send(400, json.dumps({"error": str(exc)}), "application/json")
         elif path == "/static/xterm.js":
             p = SHARE / "xterm.js"
             if p.is_file():

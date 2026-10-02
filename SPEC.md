@@ -664,8 +664,8 @@ They are not permanent ownership.
 Logical interface:
 
 ```bash
-hive claim <resource>
-hive release <resource>
+hive claim <resource> [resource...]
+hive release <resource> [resource...]
 hive claims
 hive claim break <resource>
 ```
@@ -894,8 +894,8 @@ hive join <member>
 hive say <message...>
 hive room [--last N] [--since-last]
 hive observe
-hive claim <resource>
-hive release <resource>
+hive claim <resource> [resource...]
+hive release <resource> [resource...]
 hive claims
 hive claim break <resource>
 hive knowledge search <query...>

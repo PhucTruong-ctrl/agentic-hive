@@ -22,8 +22,8 @@ usage:
   hive say <message...>          (or: hive say - < file)
   hive room [--last N] [--since-last] [--since G]
   hive observe
-  hive claim <resource>
-  hive release <resource>
+  hive claim <resource> [resource...]
+  hive release <resource> [resource...]
   hive claims
   hive claim break <resource>
   hive delegate <target> --task <msg> [--worktree <dir>] [--branch <br>] [--claim <res>]
@@ -238,44 +238,66 @@ cmd_claims() {
 cmd_claim() {
   if [[ ${1:-} == break ]]; then shift; cmd_claim_break "$@"; return; fi
   require_init
-  local m r d owner other
+  local m r d owner other created=()
   m=$(require_member)
-  r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive claim <resource>"
-  d=$(claim_dir "$r")
-
-  for other in "$HIVE_ROOT"/claims/*/; do
-    [[ -d $other && ${other%/} != "$d" ]] || continue
-    owner=$(cat "$other/owner" 2>/dev/null || echo '?')
-    [[ $owner == "$m" ]] && continue
-    if overlaps "$r" "$(cat "$other/resource" 2>/dev/null)"; then
-      die "'$r' overlaps '$(cat "$other/resource")' claimed by $owner — coordinate in the Room"
+  (($#)) || die "usage: hive claim <resource> [resource...]"
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
+  # Preflight the whole request so a conflict does not leave a partial batch.
+  for r in "$@"; do
+    [[ -n $r ]] || die "claim resources must not be empty"
+    d=$(claim_dir "$r")
+    if [[ -d $d ]]; then
+      owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+      [[ $owner == "$m" ]] || die "'$r' is claimed by $owner since $(cat "$d/created-at" 2>/dev/null || echo '?') — coordinate in the Room, or 'hive claim break' if it is stale"
+    fi
+    for other in "$HIVE_ROOT"/claims/*/; do
+      [[ -d $other && ${other%/} != "$d" ]] || continue
+      owner=$(cat "$other/owner" 2>/dev/null || echo '?')
+      [[ $owner == "$m" ]] && continue
+      if overlaps "$r" "$(cat "$other/resource" 2>/dev/null)"; then
+        die "'$r' overlaps '$(cat "$other/resource")' claimed by $owner — coordinate in the Room"
+      fi
+    done
+  done
+  for r in "$@"; do
+    d=$(claim_dir "$r")
+    if [[ -d $d ]]; then
+      echo "hive: already yours: $r"
+    elif mkdir "$d" 2>/dev/null; then
+      created+=("$d")
+      printf '%s\n' "$m" >"$d/owner"
+      printf '%s\n' "$r" >"$d/resource"
+      now >"$d/created-at"
+      echo "hive: claimed $r"
+    else
+      for other in "${created[@]}"; do rm -f "$other"/{owner,resource,created-at}; rmdir "$other"; done
+      die "could not claim '$r'"
     fi
   done
-
-  if mkdir "$d" 2>/dev/null; then
-    printf '%s\n' "$m" >"$d/owner"
-    printf '%s\n' "$r" >"$d/resource"
-    now >"$d/created-at"
-    echo "hive: claimed $r"
-  else
-    owner=$(cat "$d/owner" 2>/dev/null || echo '?')
-    [[ $owner == "$m" ]] && { echo "hive: already yours: $r"; return 0; }
-    die "'$r' is claimed by $owner since $(cat "$d/created-at" 2>/dev/null || echo '?') — coordinate in the Room, or 'hive claim break' if it is stale"
-  fi
 }
 
 cmd_release() {
   require_init
   local m r d owner
   m=$(require_member)
-  r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive release <resource>"
-  d=$(claim_dir "$r")
-  [[ -d $d ]] || die "no claim on '$r'"
-  owner=$(cat "$d/owner" 2>/dev/null || echo '?')
-  [[ $owner == "$m" ]] || die "'$r' is held by $owner, not you (use 'hive claim break' if it is stale)"
-  rm -f "$d"/{owner,resource,created-at}
-  rmdir "$d"
-  echo "hive: released $r"
+  (($#)) || die "usage: hive release <resource> [resource...]"
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
+  for r in "$@"; do
+    [[ -n $r ]] || die "release resources must not be empty"
+    d=$(claim_dir "$r")
+    [[ -d $d ]] || die "no claim on '$r'"
+    owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+    [[ $owner == "$m" ]] || die "'$r' is held by $owner, not you (use 'hive claim break' if it is stale)"
+  done
+  for r in "$@"; do
+    d=$(claim_dir "$r")
+    [[ -d $d ]] || continue  # repeated argument
+    rm -f "$d"/{owner,resource,created-at}
+    rmdir "$d"
+    echo "hive: released $r"
+  done
 }
 
 cmd_claim_break() {
@@ -283,6 +305,8 @@ cmd_claim_break() {
   local m r d owner since
   m=$(require_member)
   r="${1:-}"; [[ -n $r && $# -eq 1 ]] || die "usage: hive claim break <resource>"
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
   d=$(claim_dir "$r")
   [[ -d $d ]] || die "no claim on '$r'"
   owner=$(cat "$d/owner" 2>/dev/null || echo '?')
@@ -290,6 +314,7 @@ cmd_claim_break() {
   rm -f "$d"/{owner,resource,created-at}
   rmdir "$d"
   echo "hive: broke claim on $r (was $owner since $since)"
+  flock -u 9
   # Breaking a claim is never silent.
   cmd_say "Broke claim on \`$r\` (held by $owner since $since)." >/dev/null
 }
@@ -395,6 +420,8 @@ cmd_delegate() {
 
   # Claims validation and transfer
   local res d other owner
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
   for res in "${claims[@]}"; do
     d=$(claim_dir "$res")
     for other in "$HIVE_ROOT"/claims/*/; do
@@ -408,26 +435,25 @@ cmd_delegate() {
 
     if [[ -d $d ]]; then
       owner=$(cat "$d/owner" 2>/dev/null || echo '?')
-      if [[ $owner == "$m" ]]; then
-        # Transfer ownership to target
-        printf '%s\n' "$target" >"$d/owner"
-        now >"$d/created-at"
-      elif [[ $owner != "$target" ]]; then
-        die "claim collision: '$res' is held by $owner"
-      fi
-    else
-      mkdir "$d" 2>/dev/null || true
-      printf '%s\n' "$target" >"$d/owner"
-      printf '%s\n' "$res" >"$d/resource"
-      now >"$d/created-at"
+      [[ $owner == "$m" || $owner == "$target" ]] || die "claim collision: '$res' is held by $owner"
     fi
   done
+  for res in "${claims[@]}"; do
+    d=$(claim_dir "$res")
+    if [[ ! -d $d ]]; then
+      mkdir "$d" 2>/dev/null || die "could not claim '$res' for $target"
+      printf '%s\n' "$res" >"$d/resource"
+    fi
+    printf '%s\n' "$target" >"$d/owner"
+    now >"$d/created-at"
+  done
+  flock -u 9
 
   # Record delegation metadata
   mkdir -p "$HIVE_ROOT/members/$target/state"
   local target_state="$HIVE_ROOT/members/$target/state/delegation.json"
   local claims_json
-  claims_json=$(printf '%s\n' "${claims[@]}" | jq -R . | jq -s .)
+  claims_json=$(jq -n '$ARGS.positional' --args "${claims[@]}")
   jq -n \
     --arg parent "$m" \
     --arg target "$target" \
@@ -476,14 +502,18 @@ cmd_delegate_done() {
   parent=$(jq -r '.parent_member // "peer"' "$target_state" 2>/dev/null || echo "peer")
 
   # Release claims recorded in delegation.json if still held by this member
-  local r d
-  for r in $(jq -r '.claims[]? // empty' "$target_state" 2>/dev/null || true); do
+  local r d delegated_claims=()
+  mapfile -t delegated_claims < <(jq -r '.claims[]? // empty' "$target_state" 2>/dev/null)
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
+  for r in "${delegated_claims[@]}"; do
     d=$(claim_dir "$r")
     if [[ -d $d && $(cat "$d/owner" 2>/dev/null || true) == "$m" ]]; then
       rm -f "$d"/{owner,resource,created-at}
       rmdir "$d" 2>/dev/null || true
     fi
   done
+  flock -u 9
 
   # Archive delegation state
   mv -f "$target_state" "$HIVE_ROOT/members/$m/state/delegation.done.json"

@@ -51,5 +51,5 @@ bounded subtask with claims, use `hive delegate <member> --task <request>`;
 the target reports completion with `hive delegate done <summary>`.
 
 Hive CLI: `hive say <msg>`, `hive room`, `hive message <member> <msg>`,
-`hive delegate <member> --task <msg>`, `hive claim|release <resource>`,
+`hive delegate <member> --task <msg>`, `hive claim|release <resource>...`,
 `hive claims`, `hive knowledge search <query>`.

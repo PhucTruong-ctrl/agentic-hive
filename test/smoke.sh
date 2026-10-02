@@ -82,6 +82,14 @@ check "break announces in Room" grep -q 'Broke claim on `assets/player/`' "$HIVE
 check "dot resource is safe" env HIVE_MEMBER=alice hive claim .. >/dev/null
 check "dot claim stored inside claims/" test -d "$HIVE_ROOT/claims/%2E."
 HIVE_MEMBER=alice hive release .. >/dev/null
+HIVE_MEMBER=alice hive claim src/one.gd src/two.gd >/dev/null
+check "batch claim creates both resources" bash -c 'hive claims | grep -q "alice -> src/one.gd" && hive claims | grep -q "alice -> src/two.gd"'
+check "batch claim conflict leaves no partial claim" bash -c '! HIVE_MEMBER=bob hive claim src/three.gd src/one.gd >/dev/null 2>&1 && ! hive claims | grep -q "src/three.gd"'
+HIVE_MEMBER=bob hive claim src/three.gd >/dev/null
+check "batch release conflict keeps prior claims" bash -c '! HIVE_MEMBER=alice hive release src/one.gd src/three.gd >/dev/null 2>&1 && hive claims | grep -q "alice -> src/one.gd"'
+HIVE_MEMBER=alice hive release src/one.gd src/two.gd >/dev/null
+check "batch release removes both resources" bash -c '! hive claims | grep -q "src/one.gd\|src/two.gd"'
+HIVE_MEMBER=bob hive release src/three.gd >/dev/null
 
 # Knowledge.
 printf 'Run Godot headless under xvfb-run.\n' >"$HIVE_ROOT/knowledge/godot.md"

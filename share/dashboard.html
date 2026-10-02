@@ -161,6 +161,27 @@
   .commit { font-size: 12.5px; padding: 5px 0; border-top: 1px solid var(--line); }
   .commit:first-child { border-top: 0; }
   .commit .h { font-family: var(--mono); color: var(--accent); }
+  .project { border-top: 1px solid var(--line); padding: 10px 0; }
+  .project:first-child { border-top: 0; padding-top: 0; }
+  .project-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+  .project-head b { font-family: var(--mono); }
+  .project-path { color: var(--muted); font: 11px var(--mono); overflow-wrap: anywhere; margin: 3px 0 6px; }
+  .project-state { display: flex; flex-wrap: wrap; gap: 5px; margin: 5px 0; }
+  .project-state span { background: var(--chip); border-radius: 4px; padding: 2px 6px; font-size: 11px; }
+  .file-browser { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); gap: 16px; }
+  .file-browser > div { min-width: 0; }
+  .file-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 10px; }
+  .file-crumbs button, .file-entry { border: 0; background: none; color: var(--ink); cursor: pointer; font: inherit; text-align: left; }
+  .file-crumbs button { color: var(--accent); padding: 2px 3px; }
+  .file-list { border: 1px solid var(--line); border-radius: 7px; min-height: 180px; max-height: 65vh; overflow: auto; }
+  .file-entry { display: block; width: 100%; padding: 8px 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  .file-entry:hover, .file-entry.active { background: var(--chip); }
+  .file-entry small { display: block; color: var(--muted); margin-left: 22px; }
+  .file-preview { border: 1px solid var(--line); border-radius: 7px; padding: 12px; min-height: 180px; }
+  .file-preview h3 { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
+  .file-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); max-height: 62vh; overflow: auto; }
+  .file-preview a { color: var(--accent); }
+  @media (max-width: 700px) { .file-browser { grid-template-columns: 1fr; } }
   .tabs, .member-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
   .tabs button, .member-tabs button, .top-action { font: inherit; cursor: pointer; border: 1px solid var(--line);
     color: var(--ink); background: var(--panel); border-radius: 7px; padding: 7px 12px; }
@@ -236,7 +257,7 @@
   </div>
 
   <nav class="tabs" aria-label="Dashboard views">
-    <button class="active" data-tab="overview">Members &amp; Room</button><button data-tab="activity">Claims &amp; Commits</button>
+    <button class="active" data-tab="overview">Members &amp; Room</button><button data-tab="activity">Claims &amp; Projects</button><button data-tab="files">Hive files</button>
   </nav>
   <div class="panel dashboard-grid" id="panel-overview">
   <section>
@@ -266,7 +287,13 @@
   </div>
   <div class="panel dashboard-grid activity" id="panel-activity" hidden>
     <section><h2>Claims <span class="n" id="c-count"></span></h2><div id="claims"></div></section>
-    <section><h2>Recent commits</h2><div id="git"></div></section>
+    <section><h2>Git projects</h2><div id="projects"></div></section>
+  </div>
+  <div class="panel" id="panel-files" hidden>
+    <section><h2>Hive files</h2><div class="file-browser">
+      <div><div class="file-crumbs" id="file-crumbs"></div><div class="file-list" id="file-list"></div></div>
+      <div class="file-preview" id="file-preview"><span class="empty">Choose a file to preview. Folders include member notes, artifacts, scratch, state, the shared Room, and knowledge.</span></div>
+    </div></section>
   </div>
   <footer>Hive dashboard · refreshes every 3 seconds</footer>
 </div>
@@ -348,14 +375,48 @@ let memberTabChosen = false;
 let unseenRoom = 0;
 let replyTo = null;
 let renderedRoomKey = null;
+let currentFolder = "";
+let filesLoaded = false;
 
 function showTab(tab) {
   currentTab = tab;
   window.location.hash = tab;
-  for (const name of ["overview", "activity"]) {
+  for (const name of ["overview", "activity", "files"]) {
     $("panel-" + name).hidden = name !== tab;
     document.querySelector(`[data-tab="${name}"]`).classList.toggle("active", name === tab);
   }
+  if (tab === "files" && !filesLoaded) openFolder("");
+}
+
+async function openFolder(path) {
+  const list = $("file-list"), crumbs = $("file-crumbs");
+  list.textContent = "Loading…";
+  try {
+    const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, {cache: "no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    currentFolder = path;
+    filesLoaded = true;
+    $("file-preview").innerHTML = `<span class="empty">Choose a file to preview.</span>`;
+    const parts = path ? path.split("/") : [];
+    crumbs.innerHTML = `<button type="button" data-folder="">Hive</button>` + parts.map((part, index) =>
+      ` / <button type="button" data-folder="${esc(parts.slice(0, index + 1).join("/"))}">${esc(part)}</button>`).join("");
+    list.innerHTML = data.entries.length ? data.entries.map(entry =>
+      `<button type="button" class="file-entry" data-${entry.type === "dir" ? "folder" : "file"}="${esc(entry.path)}">${entry.type === "dir" ? "📁" : "📄"} ${esc(entry.name)}${entry.modified ? `<small>${ago(entry.modified)}${entry.type === "file" ? ` · ${Math.ceil(entry.size / 1024)} KiB` : ""}</small>` : ""}</button>`).join("")
+      : `<div class="empty" style="padding:12px">This folder is empty.</div>`;
+  } catch (err) { list.textContent = `Could not open folder: ${err.message}`; }
+}
+
+async function openFile(path) {
+  const preview = $("file-preview");
+  document.querySelectorAll(".file-entry").forEach(entry => entry.classList.toggle("active", entry.dataset.file === path));
+  preview.textContent = "Loading…";
+  try {
+    const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {cache: "no-store"});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    preview.innerHTML = `<h3>${esc(path)}</h3><a href="/api/file?path=${encodeURIComponent(path)}&download=1">Download</a>${data.binary ? `<p class="empty">Binary file · ${Math.ceil(data.size / 1024)} KiB. Download to view it.</p>` : `<pre>${esc(data.text)}</pre>${data.truncated ? `<p class="dim">Preview limited to 128 KiB. Download for the full file.</p>` : ""}`}`;
+  } catch (err) { preview.textContent = `Could not open file: ${err.message}`; }
 }
 
 function showMemberTab(tab) {
@@ -488,10 +549,12 @@ function render(d) {
     <tr><td class="dim">${esc(c.owner)}</td><td class="res">${esc(c.resource)}</td><td class="dim">${ago(c.created_at)}</td></tr>`).join("")}</table>`
     : `<div class="empty">No active claims.</div>`;
 
-  $("git").innerHTML = d.git.length ? d.git.map(c => `
-    <div class="commit"><span class="h">${esc(c.hash)}</span> ${esc(c.subject)}
-      <span class="dim">· ${esc(c.author)} · ${ago(c.date)}${c.refs ? " · " + esc(c.refs) : ""}</span></div>`).join("")
-    : `<div class="empty">No live members in a git worktree.</div>`;
+  $("projects").innerHTML = d.projects.length ? d.projects.map(p => `
+    <div class="project"><div class="project-head"><b>${esc(p.name)}</b><span class="dim">${esc(p.branch)}</span></div>
+      <div class="project-path">${esc(p.path)}</div>
+      <div class="project-state">${p.staged == null ? `<span>Status unavailable</span>` : `<span>${p.staged} staged</span><span>${p.modified} modified</span><span>${p.untracked} untracked</span>`}${p.ahead != null ? `<span>↑ ${p.ahead} ahead</span><span>↓ ${p.behind} behind</span>` : ""}</div>
+      ${p.commit ? `<div class="commit"><span class="h">${esc(p.commit.hash)}</span> ${esc(p.commit.subject)} <span class="dim">· ${ago(p.commit.date)}</span></div>` : `<span class="empty">No commits yet.</span>`}
+    </div>`).join("") : `<div class="empty">No Git projects found under Hive projects or member worktrees.</div>`;
 
   $("r-count").textContent = d.room.length ? `· last ${d.room.length}` : "";
   renderRoom(d.room, d.members);
@@ -617,6 +680,8 @@ document.addEventListener("click", async e => {
   if (!b) return;
   if (b.dataset.tab) return showTab(b.dataset.tab);
   if (b.dataset.memberTab) return showMemberTab(b.dataset.memberTab);
+  if (b.dataset.folder !== undefined) return openFolder(b.dataset.folder);
+  if (b.dataset.file) return openFile(b.dataset.file);
   if (b.dataset.roomMember) return focusMember(b.dataset.roomMember);
   if (b.dataset.replyGen) return startReply(b.dataset.replyGen);
   if (b.dataset.mention) return insertMention(b.dataset.mention);
@@ -889,6 +954,7 @@ const initial = /*__INITIAL_STATE__*/null;
 const initialTab = window.location.hash.slice(1);
 if (["overview", "members", "room"].includes(initialTab)) showTab("overview");
 if (["activity", "claims", "commits"].includes(initialTab)) showTab("activity");
+if (initialTab === "files") showTab("files");
 if (initial) render(initial);
 setTimeout(tick, initial ? 3000 : 0);
 </script>
