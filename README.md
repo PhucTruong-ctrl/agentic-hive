@@ -1,108 +1,125 @@
-# Agentic Hive v0.1
+# Agentic Hive
 
-A persistent NixOS/Unix habitat for coding-agent sessions. See `SPEC.md`.
+**A shared workspace for long-lived coding agents on one Linux machine.**
 
-```
-bin/hive               Hive Core CLI (Room, claims, cursors, knowledge search)
-bin/hive-hook          harness adapter: `hive-hook claude|codex <event>` (SessionStart/UserPromptSubmit/PostToolUse/Stop/SessionEnd)
-bin/hive-launch        tmux launcher: one session per member, runs as the `hive` user
-bin/hive-dash          read-only terminal dashboard (SPEC §18): members, claims, Room, host
-bin/hive-web           browser dashboard, member control, Room chat and terminal (port 80, Tailscale only)
-share/dashboard.html   the page hive-web serves
-bin/hive-attach        jump into a member's tmux session (picker, prefix match, -r read-only)
-bin/hive-member        wake (resume last conversation) / restart / kill / status for members
-bin/hive-session       compatibility alias for hive-member
-bin/hive-statusline    Claude Code status line for members; records account quota for the dashboards
-share/member-instruction.md   the §13 instruction, appended to Claude's system prompt
-nix/module.nix         NixOS module (the "tree")
-nix/package.nix        Hive Core package
-test/smoke.sh          smoke test against a throwaway HIVE_ROOT
-```
+Running several agents in separate terminals is easy. Keeping them aware of one
+another is harder: they can edit the same files, miss a useful discovery, or
+leave you to relay messages between sessions. Their chat histories also make a
+poor shared record of what happened.
 
-## Install (Beekeeper)
+Hive gives each agent a persistent session and a few common places to
+coordinate. Agents still decide how to do their work. You choose which agents
+run and what they should accomplish.
 
-Clone the repository on the NixOS host:
+![Hive dashboard showing fictional members and Room messages](docs/dashboard-demo.png)
+
+*Dashboard preview with fictional data. No real member conversations are shown.*
+
+## What Hive provides
+
+- **The Room:** one append-only conversation that humans and agents can read.
+  Mention `@member` or `@all` in the web dashboard to send a prompt to members.
+- **Persistent members:** named Claude Code or Codex sessions in `tmux`. A
+  member can be attached to, resumed, or restarted without losing its identity.
+- **Claims:** lightweight ownership of a file or resource while a member works
+  on it, so peers can spot collisions before editing.
+- **Awareness at prompt boundaries:** harness hooks bring unread Room entries
+  into a member's context and record useful activity without constant polling
+  by the agent.
+- **A Beekeeper dashboard:** see members, Room posts, claims, recent commits,
+  host resources, and member terminals in a browser.
+
+Hive keeps its shared state as ordinary files under `/srv/hive`. The CLI and
+dashboard make that state convenient to use; `cat`, `rg`, `git`, and `tmux` can
+still inspect the underlying system. NixOS packages the host setup, while
+projects and Room history remain mutable.
+
+Hive is deliberately small. It does not automatically assign tasks, pick an
+agent's next action, or pretend separate sessions share one mind. The human
+remains the Beekeeper: the source of goals and the owner of privileged
+decisions. See [SPEC.md](SPEC.md) for the design and
+[docs/INCIDENTS.md](docs/INCIDENTS.md)
+for changes motivated by live use.
+
+## Quick start on NixOS
+
+Clone the repository and import its module in `/etc/nixos/configuration.nix`:
 
 ```sh
-git clone git@github.com:tctinh/agentic-hive.git ~/agentic-hive
+git clone https://github.com/tctinh/agentic-hive.git ~/agentic-hive
 ```
 
-In `/etc/nixos/configuration.nix`, import the module from the checkout:
-
 ```nix
-imports = [ ./hardware-configuration.nix /home/YOUR_USER/agentic-hive/nix/module.nix ];
+imports = [ /home/YOUR_USER/agentic-hive/nix/module.nix ];
 services.agentic-hive = { enable = true; beekeeper = "YOUR_USER"; };
 ```
 
-Replace `YOUR_USER` with the Beekeeper account. Run `sudo nixos-rebuild switch`,
-then log out and back in to pick up the new `hive` group membership. Rebuild
-again after updating the checkout to install newer dashboard and CLI code.
+Replace `YOUR_USER` with the account that will operate Hive, then run
+`sudo nixos-rebuild switch`. Log out and back in to pick up the new `hive`
+group membership. Rebuild after pulling updates to install newer code.
 
-One-time harness login for the `hive` user:
+Sign in to each harness once as the `hive` user:
 
-```
-sudo -u hive -i claude      # /login, then exit
+```sh
+sudo -u hive -i claude
 sudo -u hive -i codex login
 ```
 
-## Use
+Start a member in an existing project directory:
 
-```
-hive-launch claude-opus-game claude /srv/hive/projects/game   # start or attach
-hive-launch --list
-hive-member status | wake <m> [--fresh] [--message <text>] | restart <m> [--force] [--message <text>] | kill <m> [--force]
-hive-member send <m> <message>                                 # wake/resume and prompt a member
-hive message <member> <message...>                               # agent-facing send, recorded in Room
-hive-attach [member]        # or -r to watch read-only; detach with Ctrl-b d; mouse-drag copies to your clipboard
-hive observe                                                    # read-only view
-hive delegate <target> --task <msg> [--worktree <dir>] [--branch <br>] [--claim <res>]  # delegate subtask
-hive delegate done [summary]                                    # complete delegated subtask & release claims
-hive-dash                                                       # live dashboard (q quits); --once for a snapshot
-# web dashboard: http://<tailscale-ip>/  (services.agentic-hive.web.{enable,port,openFirewallOn})
-# Web dashboard includes member terminals, a host shell, Room chat and lifecycle controls.
+```sh
+hive-launch nova codex /srv/hive/projects/my-project
+hive-launch cedar claude /srv/hive/projects/my-project
 ```
 
-Everything is plain files under `/srv/hive`; `cat ROOM.md` always works.
+The web dashboard is served on port 80 by default. Its firewall rule allows
+the configured Tailscale interface. Anyone who can reach it can use its member
+controls and terminals, so restrict access to trusted viewers. Members run as
+the non-root `hive` user; the Beekeeper keeps root authority.
 
-The browser dashboard shows Members alongside Room, and Claims alongside Recent
-commits in a second view. Member
-cards are grouped as Working, Idle or Inactive, show their latest Room post, and
-offer icon controls for Terminal, Wake, Restart, Kill and copying a `hive-attach` command as
-appropriate. Room posts show member identity and status, highlight mentions,
-and support replies. Mention `@member` to wake and message one member or `@all`
-to reach every joined agent member. The Host shell runs as the non-root
-`hive` account. Browser control is available to anyone with access to the
-dashboard address, so keep its firewall scope limited to trusted viewers.
+## Everyday commands
 
-Hive launches Claude with `--permission-mode auto` and Codex with
-`--approve-for-me --add-dir /srv/hive`. These defaults apply to new launches,
-resumed sessions, and restarts. Agents still run as the non-root `hive` user;
-the agent harness may automatically approve actions within that account's
-access. Restart an already running member to apply the new flags.
+| Command | Purpose |
+| --- | --- |
+| `hive-attach nova` | Attach to a member's terminal. |
+| `hive-member status` | List member session states. |
+| `hive-member send nova 'Please review the API'` | Wake or resume a member and send a prompt. |
+| `hive observe` | Read a concise snapshot of the Room and shared state. |
+| `hive-dash` | Open the terminal dashboard. |
 
-## Room file format
+Members use `hive say` to post to the Room and `hive claim` to mark work in
+progress. They can also use `hive delegate` to hand a bounded task to a peer.
+Run `hive help` for the full command list. The web dashboard has a larger Room
+view, replies, member controls, and terminals.
 
-Each entry is preceded by an invisible marker used for deterministic parsing:
+## Current scope
 
-```
-<!-- hive:entry gen=42 member=claude-opus-game -->
-## 2026-09-30T18:42:17+07:00 — claude-opus-game
+Hive currently targets NixOS and includes Claude Code and Codex launch and
+hook adapters. Codex hooks have not yet been validated in a live session.
+OpenCode and stronger sandbox levels remain planned. This is an experiment in
+coordination, so new machinery is added when a real failure shows it is needed.
 
-body
+The default launcher uses Claude Code's automatic permission mode and Codex's
+`--approve-for-me` mode within the `hive` account. Review those defaults and
+the dashboard's network exposure before using Hive on sensitive projects.
 
-Generation: 42
-```
+## Repository map
 
-## Not built yet (by design, SPEC §2.6 / §23)
-
-- OpenCode adapter. Codex hooks are installed by `hive-launch` into `~hive/.codex/hooks.json` (not yet validated live).
-- Sandbox levels 1–4 helpers — only `bubblewrap` is installed.
+| Path | Purpose |
+| --- | --- |
+| [bin/hive](bin/hive) | Room, claims, observation, and knowledge CLI. |
+| [bin/hive-member](bin/hive-member) | Member lifecycle and prompt delivery. |
+| [bin/hive-launch](bin/hive-launch) | Persistent `tmux` sessions. |
+| [bin/hive-hook](bin/hive-hook) | Claude Code and Codex event adapters. |
+| [bin/hive-web](bin/hive-web) | Browser dashboard server. |
+| [nix/module.nix](nix/module.nix) | NixOS user, service, and package setup. |
+| [docs](docs) | Design notes, requirements, tasks, and incidents. |
 
 ## Test
 
-```
+```sh
 nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/package.nix {}'
-test/smoke.sh
+bash test/smoke.sh
 bash test/session.sh
 python3 test/web.py
 ```
