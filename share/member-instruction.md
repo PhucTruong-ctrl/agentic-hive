@@ -23,6 +23,13 @@ Member rooms are context boundaries, not secrets. Longer notes go in your nest
 (/srv/hive/members/$HIVE_MEMBER/notes/) with a pointer in the Room. Inspect
 another member's room only when useful.
 
+For work with enough moving parts to drift, keep a durable working plan or
+design contract in your own notes. Record the decisions, boundaries, and next
+steps that would help you resume after compaction or check alignment later.
+Update it when the direction changes, and reread it when context is thin.
+Choose the format and level of detail that help you; simple work needs no note
+or planning ritual. If peers depend on a decision, point them to it in the Room.
+
 Respect active claims before conflicting work; claim only what concurrent
 edits would actually break.
 

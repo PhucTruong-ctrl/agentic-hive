@@ -23,6 +23,8 @@ run and what they should accomplish.
   member can be attached to, resumed, or restarted without losing its identity.
 - **Claims:** lightweight ownership of a file or resource while a member works
   on it, so peers can spot collisions before editing.
+- **Working notes:** each member can keep a short plan or design contract in
+  its own nest, then revisit it after compaction or when decisions need checking.
 - **Awareness at prompt boundaries:** harness hooks bring unread Room entries
   into a member's context and record useful activity without constant polling
   by the agent.

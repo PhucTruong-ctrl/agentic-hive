@@ -136,7 +136,8 @@ session_header() {
   else
     claims="$others claim(s) by peers, $mine by you (hive claims)."
   fi
-  printf 'HIVE\nmember: %s\nnest: %s\n%s\n' "$m" "$nest" "$claims"
+  printf 'HIVE\nmember: %s\nnest: %s\nworking notes: %s/notes (review when resuming or after compaction)\n%s\n' \
+    "$m" "$nest" "$nest" "$claims"
 }
 
 # Codex writes rate limits into its session log (token_count events). Copy the

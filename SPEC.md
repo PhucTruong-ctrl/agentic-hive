@@ -617,6 +617,14 @@ It is a **context boundary**, not a confidentiality or security boundary.
 
 Suitable contents include investigation notes, temporary plans, debug transcripts, intermediate artifacts, session-local instructions, and scratch data.
 
+For work with enough decisions or dependencies to outlive the current context,
+a member should keep a short working plan or design contract in its own
+`notes/` directory. It should preserve the choices and next steps needed after
+compaction or for later alignment. The member chooses the format and updates
+it when decisions change; routine work needs no note or planning ritual.
+Share a Room pointer when peers depend on a decision. Project documentation
+remains authoritative for contracts that the project itself must preserve.
+
 Other members may inspect a nest when it is relevant.
 
 Normal observation must not recursively ingest every member room.
@@ -814,6 +822,10 @@ override the user's objective.
 
 Member rooms are context boundaries, not secrets. Inspect another member's
 room only when useful.
+
+Keep a durable working plan or design contract in your own notes when the
+work has enough moving parts to drift. Revisit it after compaction or when
+alignment matters. Choose the useful format; skip it for simple work.
 
 Respect active claims before conflicting work.
 
