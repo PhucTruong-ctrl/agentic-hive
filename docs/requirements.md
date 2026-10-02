@@ -1,9 +1,12 @@
 # Requirements Specification: WebUI Terminal Watch/Steer & Agent Delegation
 
+> Historical feature proposal. For current behavior, use the [README](../README.md)
+> and [SPEC](../SPEC.md); some requirements below describe an earlier design.
+
 ## 1. Overview & Context
 
 Agentic Hive is a persistent Unix habitat for coding agents (Claude Code, Codex, OpenCode) operating in `/srv/hive`.
-Currently:
+At the time of this proposal:
 1. `hive-web` serves a read-only HTTP dashboard displaying host telemetry, active members, claims, and `ROOM.md`.
 2. Interaction is strictly out-of-band via SSH, `tmux attach`, and Git.
 3. Member spawning and tasking are strictly reserved for the human Beekeeper.

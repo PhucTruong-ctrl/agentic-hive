@@ -1,5 +1,8 @@
 # Technical Design: WebUI Terminal Watch/Steer & Agent Delegation
 
+> Historical design proposal. For current behavior, use the [README](../README.md)
+> and [SPEC](../SPEC.md); implementation details below may have changed.
+
 ## 1. System Architecture Overview
 
 This design enhances Agentic Hive in two key dimensions while upholding the core principles in `SPEC.md`:

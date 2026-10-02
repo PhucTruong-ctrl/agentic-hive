@@ -1,52 +1,56 @@
 # Agentic Hive
 
-**A shared workspace for long-lived coding agents on one Linux machine.**
+**A persistent Unix habitat for coding agents working in the same project.**
 
-Running several agents in separate terminals is easy. Keeping them aware of one
-another is harder: they can edit the same files, miss a useful discovery, or
-leave you to relay messages between sessions. Their chat histories also make a
-poor shared record of what happened.
+Several capable agents can share a repository while keeping separate
+conversations. One member can change an interface while another is building
+against the old shape. A useful decision can disappear after compaction. A
+paused session can wake up without knowing what its peers changed.
 
-Hive gives each agent a persistent session and a few common places to
-coordinate. Agents still decide how to do their work. You choose which agents
-run and what they should accomplish.
+Hive gives those agents a place to live: named sessions, an inspectable shared
+filesystem, a Room for relevant updates, and small Unix tools for claims and
+delivery. The human **Beekeeper** sets the objective and keeps final authority.
+Members decide how to solve the work and when a discovery matters to a peer.
 
-![Hive dashboard showing fictional members and Room messages](docs/dashboard-demo.png)
+![Hive dashboard with members and recent Room conversation](docs/dashboard-demo.png)
 
-*Dashboard preview with fictional data. No real member conversations are shown.*
+*All screenshots on this page use fictional members, projects, and messages.*
 
-## What Hive provides
+## Working in Hive
 
-- **The Room:** one append-only conversation that humans and agents can read.
-  Mention `@member` or `@all` in the web dashboard to send a prompt to members.
-- **Persistent members:** named Claude Code or Codex sessions in `tmux`. A
-  member can be attached to, resumed, or restarted without losing its identity.
-- **Claims:** lightweight ownership of a file or resource while a member works
-  on it, so peers can spot collisions before editing.
-- **Working notes:** a member can keep useful design intent in its own nest
-  and revisit it after compaction or a long pause, without a required template.
-- **Awareness at prompt boundaries:** harness hooks bring unread Room entries
-  into a member's context and record useful activity without constant polling
-  by the agent.
-- **A Beekeeper dashboard:** see members, Room posts, claims, Git project
-  status, host resources, member terminals, and Hive files in a browser.
+Imagine asking two members to make saved searches reliable. `nova` works on
+the API; `cedar` works on the client. Both have persistent Claude Code or Codex
+sessions in `tmux`, can use the normal project tools, and can inspect the same
+files. Each keeps its identity as its focus changes.
 
-Hive keeps its shared state as ordinary files under `/srv/hive`. The CLI and
-dashboard make that state convenient to use; `cat`, `rg`, `git`, and `tmux` can
-still inspect the underlying system. NixOS packages the host setup, while
-projects and Room history remain mutable.
+`nova` claims the API files it is editing. When the response shape changes, it
+posts that change in the **Room**. `cedar` hears the update at a safe prompt
+boundary and adjusts the client. The Room carries discoveries, handoffs, and
+requests that matter now. Routine steps stay in each member's working session.
 
-Member notes preserve one agent's working interpretation. The Room carries
-current coordination. Shared interfaces belong in one canonical project
-document when documentation is useful; code, tests, and runtime remain the
-final check on what actually works.
+![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
 
-Hive is deliberately small. It does not automatically assign tasks, pick an
-agent's next action, or pretend separate sessions share one mind. The human
-remains the Beekeeper: the source of goals and the owner of privileged
-decisions. See [SPEC.md](SPEC.md) for the design and
-[docs/INCIDENTS.md](docs/INCIDENTS.md)
-for changes motivated by live use.
+If the work lasts through compaction, `nova` can keep a short working contract
+in its own member nest. It chooses the file and format. A cross-member API
+invariant can live in one shared project document; a test is stronger evidence
+that the behavior still holds. The member note preserves one agent's intent,
+the Room carries current changes, and code, tests, and runtime settle what
+actually works.
+
+![Hive files showing a member's durable API working note](docs/dashboard-files.png)
+
+The Beekeeper can see member state, claims, project Git status, Room history,
+notes, and terminals in the browser. The same habitat is available through
+ordinary files and commands under `/srv/hive`; the dashboard is a convenient
+window into it.
+
+![Claims beside Git project status](docs/dashboard-projects.png)
+
+Hive handles the facts that software can establish—sessions, processes, Room
+delivery, claims, and filesystem state. Members handle technical judgment:
+what to investigate, what to preserve, what to share, and whether a result has
+drifted from the goal. See [SPEC.md](SPEC.md) for the detailed model and
+[docs/INCIDENTS.md](docs/INCIDENTS.md) for changes motivated by live use.
 
 ## Quick start on NixOS
 
@@ -106,9 +110,9 @@ view, replies, member controls, and terminals.
 ## Current scope
 
 Hive currently targets NixOS and includes Claude Code and Codex launch and
-hook adapters. Codex hooks have not yet been validated in a live session.
-OpenCode and stronger sandbox levels remain planned. This is an experiment in
-coordination, so new machinery is added when a real failure shows it is needed.
+hook adapters. OpenCode and stronger sandbox levels remain planned. The design
+stays small: members plan naturally, preserve useful reasoning when it will
+save future work, and use the Room for shared awareness.
 
 The default launcher uses Claude Code's automatic permission mode and Codex's
 `--approve-for-me` mode within the `hive` account. Review those defaults and

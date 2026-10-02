@@ -134,11 +134,9 @@ The adapter is not an orchestrator.
 
 ### 3.5 Beekeeper Dashboard
 
-The dashboard is a passive read-only instrument panel.
-
-It gives the Beekeeper eyes.
-
-SSH, tmux, Git, and normal terminal tools remain the hands.
+The dashboard gives the Beekeeper a window into members, the Room, projects,
+and host state. It also offers convenient member controls, Room posting, and
+terminals backed by the same Hive commands and Unix sessions.
 
 The dashboard must never become necessary for Hive correctness.
 
@@ -1011,7 +1009,8 @@ Telemetry may be deleted and rebuilt.
 
 ## 18. Beekeeper Dashboard
 
-The dashboard is deliberately small and read-only.
+The dashboard is deliberately small. It reads Hive and host state and provides
+Beekeeper controls through existing member and Room commands.
 
 Its job is to answer, at a glance:
 
@@ -1035,26 +1034,22 @@ Useful display:
 - recent Room entries;
 - current Room generation;
 - host CPU/RAM/disk;
-- optional recent Git activity.
+- Git project status;
+- member notes, artifacts, and shared Hive files.
 
 Do not display fake progress percentages.
 
-Do not make the dashboard a control plane.
+Member wake/restart/kill/delete, Room posting, and terminal access are
+conveniences. The underlying CLI, files, `tmux`, Git, and native harness UI
+remain available when the dashboard is absent.
 
-Operational actions remain `ssh`, `tmux`, shell, Git, and the native harness UI.
+The dashboard may poll files, telemetry, and process state every few seconds.
 
-The dashboard may simply poll telemetry/files every few seconds.
-
-WebSockets, a database, a frontend framework, or a daemon are unnecessary unless the simple version proves insufficient.
+Do not make dashboard state authoritative or add a database for it.
 
 If the dashboard dies, Hive continues unchanged.
 
-Recommended mental model:
-
-```text
-dashboard = eyes
-SSH/tmux = hands
-```
+The dashboard is one view of the habitat, not its source of truth.
 
 ## 19. Persistent Sessions
 
