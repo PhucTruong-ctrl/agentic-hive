@@ -91,6 +91,9 @@ in
       group = "hive";
       home = "/home/hive";
       createHome = true;
+      # The Beekeeper is in the hive group and may inspect the home directory.
+      # Agent-managed credentials and session folders keep their own modes.
+      homeMode = "750";
       description = "Agentic Hive members";
       # No wheel, no password: the Beekeeper enters via sudo or SSH keys.
     };
