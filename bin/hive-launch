@@ -46,11 +46,11 @@ if [[ ${1:-} == --run ]]; then
   harness="$1"; shift
   case $harness in
     claude)
-      claude --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
+      claude --permission-mode auto --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
       ;;
     codex)
       install_codex_hooks
-      codex -c "developer_instructions=$(jq -Rs . <"$SHARE/member-instruction.md")" "$@" || true
+      codex --approve-for-me --add-dir "$HIVE_ROOT" -c "developer_instructions=$(jq -Rs . <"$SHARE/member-instruction.md")" "$@" || true
       ;;
     *) die "unknown harness: $harness" ;;
   esac
@@ -79,7 +79,7 @@ hive join "$member" >/dev/null
 session="hive-$member"
 
 if ! tmux has-session -t "=$session" 2>/dev/null; then
-  # Launch record: lets hive-session wake the member in the same place.
+  # Launch record: lets hive-member wake the member in the same place.
   jq -n --arg h "$harness" --arg d "$dir" --arg now "$(date --iso-8601=seconds)" \
     '{harness: $h, dir: $d, launched_at: $now}' >"$HIVE_ROOT/members/$member/state/launch.json"
   tmux new-session -d -s "$session" -c "$dir" \

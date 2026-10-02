@@ -6,6 +6,7 @@ set -euo pipefail
 umask 0002
 
 HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+HIVE_MEMBER_BIN="${HIVE_MEMBER_BIN:-${HIVE_SESSION_BIN:-hive-member}}"
 ROOM="$HIVE_ROOT/ROOM.md"
 GEN_FILE="$HIVE_ROOT/.room-generation"
 ROOM_LOCK="$HIVE_ROOT/.room.lock"
@@ -25,6 +26,9 @@ usage:
   hive release <resource>
   hive claims
   hive claim break <resource>
+  hive delegate <target> --task <msg> [--worktree <dir>] [--branch <br>] [--claim <res>]
+  hive delegate done [summary]
+  hive message <member> <message...>  (wake or prompt another member)
   hive knowledge search <query...>
 
 Member identity comes from $HIVE_MEMBER.
@@ -321,6 +325,173 @@ cmd_knowledge() {
   rg -n -i -F --heading "${args[@]}" -- "$HIVE_ROOT/knowledge" || echo "(no matches)"
 }
 
+cmd_message() {
+  require_init
+  local m target body
+  m=$(require_member)
+  target="${1:-}"; (($#)) && shift
+  valid_member "$target" || die "usage: hive message <member> <message...>"
+  [[ -d $HIVE_ROOT/members/$target ]] || die "unknown member: $target"
+  [[ $target != "$m" ]] || die "cannot message yourself"
+  body="$*"
+  [[ -n ${body//[[:space:]]/} ]] || die "usage: hive message <member> <message...>"
+  body=${body//$'\n'/ }
+  body=${body//$'\r'/ }
+  "$HIVE_MEMBER_BIN" send "$target" "Message from Hive member $m: $body"
+  cmd_say "MESSAGE -> $target: $body" >/dev/null
+}
+
+cmd_delegate() {
+  if [[ ${1:-} == done ]]; then shift; cmd_delegate_done "$@"; return; fi
+  require_init
+  local m
+  m=$(require_member)
+
+  # Check recursion depth limit (max depth = 1)
+  local caller_state="$HIVE_ROOT/members/$m/state/delegation.json"
+  if [[ -f $caller_state ]]; then
+    local caller_depth
+    caller_depth=$(jq -r '.depth // 0' "$caller_state" 2>/dev/null || echo 0)
+    if ((caller_depth >= 1)); then
+      die "cannot delegate: member '$m' is executing a delegated task (max depth = 1)"
+    fi
+  fi
+
+  local target="${1:-}"
+  [[ -n $target ]] || die "usage: hive delegate <target-member> --task <desc> [--worktree <dir>] [--branch <br>] [--claim <path>...]"
+  shift
+  valid_member "$target" || die "invalid target member name: $target"
+  [[ -d $HIVE_ROOT/members/$target ]] || die "target member '$target' has not joined"
+  [[ $target != "$m" ]] || die "cannot delegate task to yourself"
+
+  local task="" worktree="" branch="" claims=()
+  while (($#)); do
+    case $1 in
+      --task) task="${2:?--task requires text}"; shift 2 ;;
+      --worktree) worktree="${2:?--worktree requires path}"; shift 2 ;;
+      --branch) branch="${2:?--branch requires name}"; shift 2 ;;
+      --claim) claims+=("${2:?--claim requires resource}"); shift 2 ;;
+      *) die "unknown option: $1" ;;
+    esac
+  done
+
+  [[ -n $task ]] || die "--task is required"
+
+  # Check target availability
+  local tele_file="$HIVE_ROOT/telemetry/members/$target.json"
+  if [[ -f $tele_file ]]; then
+    local target_status last_act
+    target_status=$(jq -r '.status // empty' "$tele_file" 2>/dev/null || echo "")
+    last_act=$(jq -r '.last_activity // empty' "$tele_file" 2>/dev/null || echo "")
+    if [[ $target_status == "working" && -n $last_act ]]; then
+      local now_sec act_sec
+      now_sec=$(date +%s)
+      act_sec=$(date -d "$last_act" +%s 2>/dev/null || echo "$now_sec")
+      if (((now_sec - act_sec) < 120)); then
+        die "target member '$target' is currently busy (status: working). Wait or select an idle member."
+      fi
+    fi
+  fi
+
+  # Claims validation and transfer
+  local res d other owner
+  for res in "${claims[@]}"; do
+    d=$(claim_dir "$res")
+    for other in "$HIVE_ROOT"/claims/*/; do
+      [[ -d $other && ${other%/} != "$d" ]] || continue
+      owner=$(cat "$other/owner" 2>/dev/null || echo '?')
+      [[ $owner == "$m" || $owner == "$target" ]] && continue
+      if overlaps "$res" "$(cat "$other/resource" 2>/dev/null)"; then
+        die "claim collision: '$res' overlaps '$(cat "$other/resource")' claimed by $owner"
+      fi
+    done
+
+    if [[ -d $d ]]; then
+      owner=$(cat "$d/owner" 2>/dev/null || echo '?')
+      if [[ $owner == "$m" ]]; then
+        # Transfer ownership to target
+        printf '%s\n' "$target" >"$d/owner"
+        now >"$d/created-at"
+      elif [[ $owner != "$target" ]]; then
+        die "claim collision: '$res' is held by $owner"
+      fi
+    else
+      mkdir "$d" 2>/dev/null || true
+      printf '%s\n' "$target" >"$d/owner"
+      printf '%s\n' "$res" >"$d/resource"
+      now >"$d/created-at"
+    fi
+  done
+
+  # Record delegation metadata
+  mkdir -p "$HIVE_ROOT/members/$target/state"
+  local target_state="$HIVE_ROOT/members/$target/state/delegation.json"
+  local claims_json
+  claims_json=$(printf '%s\n' "${claims[@]}" | jq -R . | jq -s .)
+  jq -n \
+    --arg parent "$m" \
+    --arg target "$target" \
+    --arg task "$task" \
+    --arg wt "$worktree" \
+    --arg br "$branch" \
+    --argjson claims "$claims_json" \
+    --arg now "$(now)" \
+    '{
+      parent_member: $parent,
+      target_member: $target,
+      task: $task,
+      worktree: (if $wt == "" then null else $wt end),
+      branch: (if $br == "" then null else $br end),
+      claims: $claims,
+      delegated_at: $now,
+      depth: 1
+    }' >"$target_state"
+
+  # Announce in ROOM.md
+  local room_msg="DELEGATE -> $target: $task"
+  [[ -n $worktree ]] && room_msg="$room_msg | worktree: $worktree"
+  [[ -n $branch ]] && room_msg="$room_msg | branch: $branch"
+  ((${#claims[@]})) && room_msg="$room_msg | claims: ${claims[*]}"
+  cmd_say "$room_msg" >/dev/null
+
+  # Deliver through the session lifecycle, including a prompt on a cold wake.
+  local prompt="Delegated task from $m: $task"
+  [[ -n $worktree ]] && prompt="$prompt (worktree: $worktree)"
+  [[ -n $branch ]] && prompt="$prompt (branch: $branch)"
+
+  "$HIVE_MEMBER_BIN" send "$target" "$prompt" || die "delegation recorded, but delivery to $target failed"
+
+  echo "hive: delegated task to $target (depth: 1)"
+}
+
+cmd_delegate_done() {
+  require_init
+  local m
+  m=$(require_member)
+  local target_state="$HIVE_ROOT/members/$m/state/delegation.json"
+  [[ -f $target_state ]] || die "no active delegation record found for member '$m'"
+
+  local summary="${1:-subtask complete}"
+  local parent
+  parent=$(jq -r '.parent_member // "peer"' "$target_state" 2>/dev/null || echo "peer")
+
+  # Release claims recorded in delegation.json if still held by this member
+  local r d
+  for r in $(jq -r '.claims[]? // empty' "$target_state" 2>/dev/null || true); do
+    d=$(claim_dir "$r")
+    if [[ -d $d && $(cat "$d/owner" 2>/dev/null || true) == "$m" ]]; then
+      rm -f "$d"/{owner,resource,created-at}
+      rmdir "$d" 2>/dev/null || true
+    fi
+  done
+
+  # Archive delegation state
+  mv -f "$target_state" "$HIVE_ROOT/members/$m/state/delegation.done.json"
+
+  # Post DONE to Room
+  cmd_say "DONE (delegated by $parent): $summary"
+}
+
 main() {
   local cmd="${1:-}"
   (($#)) && shift
@@ -333,6 +504,8 @@ main() {
     claim) cmd_claim "$@" ;;
     release) cmd_release "$@" ;;
     claims) cmd_claims "$@" ;;
+    delegate) cmd_delegate "$@" ;;
+    message) cmd_message "$@" ;;
     knowledge) cmd_knowledge "$@" ;;
     # Used by harness adapters; not part of the agent-facing surface.
     _entries) room_entries "$@" ;;

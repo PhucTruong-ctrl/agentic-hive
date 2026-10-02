@@ -1,35 +1,49 @@
 #!/usr/bin/env python3
-"""hive-web — Beekeeper dashboard over HTTP (SPEC §18). Read-only.
+"""hive-web — Beekeeper dashboard and terminal over HTTP.
 
     hive-web [--address 0.0.0.0] [--port 8080]
 
 GET /            the dashboard page (polls /api/state)
 GET /api/state   JSON snapshot of members, claims, Room and host
 
-Reads $HIVE_ROOT files and /proc only. Telemetry is a hint; process state
-wins: a member whose recorded pid is gone is reported as dead.
+Runs as the unprivileged hive user. Telemetry is a hint; process state wins.
 """
 
 import argparse
+import base64
+import binascii
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import fcntl
+import hashlib
 import json
 import os
+import pty
+import pwd
 import re
+import select
 import shutil
+import signal
+import struct
 import subprocess
+import termios
 import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 HIVE_ROOT = Path(os.environ.get("HIVE_ROOT", "/srv/hive"))
 SHARE = Path(os.environ.get("HIVE_SHARE", Path(__file__).resolve().parent.parent / "share/agentic-hive"))
 WORKING_WINDOW = 120  # seconds of inactivity before "working" becomes "idle"
 ROOM_TAIL_BYTES = 512 * 1024
 ROOM_ENTRIES = 40
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 ENTRY_RE = re.compile(r"^<!-- hive:entry gen=(\d+) member=(\S+) -->$")
+MEMBER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+WEB_MEMBER = "beekeeper"
+BIN_DIR = Path(__file__).resolve().parent
 
 
 def read(path, default=""):
@@ -73,6 +87,196 @@ class Cpu:
 CPU = Cpu()
 
 
+def tmux_cmd(*args):
+    user = os.environ.get("HIVE_USER", "hive")
+    try:
+        current_user = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        current_user = ""
+    if current_user != user and shutil.which("sudo"):
+        return ["sudo", "-u", user, "-n", "tmux"] + list(args)
+    return ["tmux"] + list(args)
+
+
+def set_winsize(fd, rows, cols):
+    try:
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except Exception:
+        pass
+
+
+def make_ws_frame(payload, opcode=0x02):
+    """Build an unmasked RFC 6455 WebSocket frame from server to client."""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+        opcode = 0x01
+    length = len(payload)
+    if length <= 125:
+        header = bytes([0x80 | opcode, length])
+    elif length <= 65535:
+        header = bytes([0x80 | opcode, 126]) + struct.pack("!H", length)
+    else:
+        header = bytes([0x80 | opcode, 127]) + struct.pack("!Q", length)
+    return header + payload
+
+
+def read_ws_frame(sock):
+    """Read and unmask an RFC 6455 frame from client."""
+    def exact(length):
+        data = bytearray()
+        while len(data) < length:
+            chunk = sock.recv(length - len(data))
+            if not chunk:
+                return None
+            data.extend(chunk)
+        return bytes(data)
+
+    head = exact(2)
+    if head is None:
+        return None, None
+    if len(head) < 2:
+        return None, None
+    b1, b2 = head[0], head[1]
+    opcode = b1 & 0x0F
+    is_masked = (b2 & 0x80) != 0
+    length = b2 & 0x7F
+
+    if length == 126:
+        ext = exact(2)
+        if ext is None:
+            return None, None
+        length = struct.unpack("!H", ext)[0]
+    elif length == 127:
+        ext = exact(8)
+        if ext is None:
+            return None, None
+        length = struct.unpack("!Q", ext)[0]
+
+    if length > 65536 or not is_masked or not (b1 & 0x80):
+        raise ValueError("invalid WebSocket frame")
+    mask = exact(4)
+    data = exact(length)
+    if mask is None or data is None:
+        return None, None
+    data = bytearray(data)
+
+    if is_masked:
+        for i in range(len(data)):
+            data[i] ^= mask[i % 4]
+
+    return opcode, bytes(data)
+
+
+class TerminalBridge:
+    def __init__(self, command, mode, sock, session_name=None, cwd=None):
+        self.command = command
+        self.mode = mode
+        self.sock = sock
+        self.session_name = session_name
+        self.cwd = cwd
+        self.running = True
+        self.master_fd = None
+        self.proc = None
+
+    def start(self):
+        self.master_fd, slave_fd = pty.openpty()
+        set_winsize(self.master_fd, 30, 90)
+
+        cmd = self.command
+        env = os.environ.copy()
+        env["TERM"] = "xterm-256color"
+        env.pop("HIVE_MEMBER", None)
+
+        try:
+            self.proc = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                env=env,
+                cwd=self.cwd,
+                preexec_fn=os.setsid,
+            )
+        except Exception as e:
+            print(f"hive-web: failed to spawn {cmd}: {e}", flush=True)
+            os.close(slave_fd)
+            self.stop()
+            return
+        os.close(slave_fd)
+
+        threading.Thread(target=self._pty_to_ws, daemon=True).start()
+        threading.Thread(target=self._ws_to_pty, daemon=True).start()
+
+    def _pty_to_ws(self):
+        try:
+            while self.running and self.proc.poll() is None:
+                r, _, _ = select.select([self.master_fd], [], [], 0.1)
+                if r:
+                    data = os.read(self.master_fd, 4096)
+                    if not data:
+                        break
+                    frame = make_ws_frame(data, opcode=0x02)
+                    self.sock.sendall(frame)
+        except Exception:
+            pass
+        finally:
+            self.stop()
+
+    def _ws_to_pty(self):
+        try:
+            while self.running:
+                opcode, data = read_ws_frame(self.sock)
+                if opcode is None or opcode == 0x08:  # Close
+                    break
+                if opcode == 0x09:  # Ping
+                    self.sock.sendall(make_ws_frame(data, opcode=0x0A))  # Pong
+                    continue
+
+                if opcode in (0x01, 0x02):
+                    try:
+                        msg = json.loads(data.decode("utf-8"))
+                        if msg.get("type") == "resize":
+                            cols = int(msg.get("cols", 80))
+                            rows = int(msg.get("rows", 24))
+                            if cols >= 20 and rows >= 5:
+                                set_winsize(self.master_fd, rows, cols)
+                                # When steering, also resize the tmux window so the agent CLI refits to the viewer
+                                if self.mode == "steer" and self.session_name:
+                                    subprocess.run(tmux_cmd("set-window-option", "-t", self.session_name, "window-size", "manual"), capture_output=True)
+                                    subprocess.run(tmux_cmd("resize-window", "-t", self.session_name, "-x", str(cols), "-y", str(rows)), capture_output=True)
+                            continue
+                        elif msg.get("type") == "input":
+                            if self.mode == "steer":
+                                input_data = msg.get("data", "")
+                                os.write(self.master_fd, input_data.encode("utf-8"))
+                            continue
+                    except Exception:
+                        pass
+                    if self.mode == "steer":
+                        os.write(self.master_fd, data)
+        except Exception:
+            pass
+        finally:
+            self.stop()
+
+    def stop(self):
+        if not self.running:
+            return
+        self.running = False
+        try:
+            if self.master_fd:
+                os.close(self.master_fd)
+        except Exception:
+            pass
+        if self.proc:
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except Exception:
+                pass
+
+
 def host():
     mem = {}
     for line in read("/proc/meminfo").splitlines():
@@ -99,11 +303,16 @@ def alive(pid, harness):
     return bool(comm) and (comm.startswith(harness) or comm.startswith("." + harness) or comm.startswith("node"))
 
 
-def members(generation, now):
+def members(generation, now, room_entries):
     out = []
+    last_posts = {}
+    for entry in reversed(room_entries):
+        last_posts.setdefault(entry["member"], entry)
     mdir = HIVE_ROOT / "members"
     for d in sorted(p for p in mdir.iterdir() if p.is_dir()) if mdir.is_dir() else []:
         name = d.name
+        if name == WEB_MEMBER:
+            continue
         try:
             t = json.loads(read(HIVE_ROOT / "telemetry/members" / f"{name}.json", "{}") or "{}")
         except json.JSONDecodeError:
@@ -133,6 +342,7 @@ def members(generation, now):
             "last_tool": t.get("last_tool"),
             "undelivered": max(0, generation - cursor),
             "notes": sorted(p.name for p in (d / "notes").glob("*") if p.is_file())[-5:],
+            "last_room": last_posts.get(name),
         })
     return out
 
@@ -175,7 +385,7 @@ def room(limit=ROOM_ENTRIES):
         body = "\n".join(e["body"]).strip()
         body = re.sub(r"\n*Generation: %d\s*$" % e["gen"], "", body).strip()
         e["body"] = body
-    return entries[-limit:]
+    return entries if limit is None else entries[-limit:]
 
 
 def git_activity(paths, limit=8):
@@ -227,7 +437,8 @@ def state():
     now = time.time()
     g = read(HIVE_ROOT / ".room-generation", "0")
     generation = int(g) if g.isdigit() else 0
-    ms = members(generation, now)
+    all_room = room(limit=None)
+    ms = members(generation, now, all_room)
     return {
         "hive_root": str(HIVE_ROOT),
         "now": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -236,9 +447,32 @@ def state():
         "members": ms,
         "claims": claims(),
         "quota": quota(),
-        "room": room(),
+        "room": all_room[-ROOM_ENTRIES:],
         "git": git_activity([m["cwd"] for m in ms if m["state"] in ("working", "idle")]),
     }
+
+
+def run_hive(binary, *args, input_text=None, member=None, timeout=45):
+    env = os.environ.copy()
+    env["HIVE_ROOT"] = str(HIVE_ROOT)
+    if member:
+        env["HIVE_MEMBER"] = member
+    result = subprocess.run(
+        [str(BIN_DIR / binary), *args], input=input_text, text=True,
+        capture_output=True, env=env, timeout=timeout,
+    )
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout).strip() or f"{binary} failed")
+    return result.stdout.strip()
+
+
+def room_targets(body):
+    names = {p.name for p in (HIVE_ROOT / "members").iterdir() if p.is_dir() and p.name != WEB_MEMBER}
+    mentions = {m.rstrip(".,;:") for m in re.findall(r"@([a-z0-9][a-z0-9._-]{0,63})", body)}
+    unknown = mentions - names - {"all"}
+    if unknown:
+        raise ValueError("unknown member: " + ", ".join(sorted(unknown)))
+    return sorted(names if "all" in mentions else mentions)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -255,8 +489,23 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _same_origin(self):
+        origin = self.headers.get("Origin")
+        return not origin or (urlparse(origin).scheme in ("http", "https")
+                              and urlparse(origin).netloc == self.headers.get("Host"))
+
+    def _json_request(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if not 0 < length <= 65536:
+            raise ValueError("request size must be 1–65536 bytes")
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        url = urlparse(self.path)
+        path = url.path
+        if path in ("/ws/terminal", "/ws/shell"):
+            self.handle_websocket(url)
+            return
         if path in ("/", "/index.html"):
             page = (SHARE / "dashboard.html").read_text()
             try:  # first paint without waiting for the first poll
@@ -270,10 +519,130 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(state()), "application/json")
             except Exception as e:  # never take the page down; report instead
                 self._send(500, json.dumps({"error": str(e)}), "application/json")
+        elif path == "/static/xterm.js":
+            p = SHARE / "xterm.js"
+            if p.is_file():
+                self._send(200, p.read_bytes(), "application/javascript")
+            else:
+                self._send(404, "not found\n", "text/plain")
+        elif path == "/static/xterm.css":
+            p = SHARE / "xterm.css"
+            if p.is_file():
+                self._send(200, p.read_bytes(), "text/css")
+            else:
+                self._send(404, "not found\n", "text/plain")
         elif path == "/healthz":
             self._send(200, "ok\n", "text/plain")
         else:
             self._send(404, "not found\n", "text/plain")
+
+    def do_POST(self):
+        if self.path in ("/api/steer", "/api/member", "/api/room"):
+            if not self._same_origin():
+                self._send(403, json.dumps({"ok": False, "error": "cross-origin request denied"}), "application/json")
+                return
+            try:
+                req = self._json_request()
+                if self.path == "/api/member":
+                    member = req.get("member", "")
+                    action = req.get("action", "")
+                    if not MEMBER_RE.fullmatch(member) or not (HIVE_ROOT / "members" / member).is_dir() or member == WEB_MEMBER:
+                        raise ValueError("known member required")
+                    commands = {
+                        "wake": ("wake", member, "--no-attach"),
+                        "restart": ("restart", member, "--force", "--no-attach"),
+                        "kill": ("kill", member, "--force"),
+                    }
+                    if action not in commands:
+                        raise ValueError("action must be wake, restart or kill")
+                    detail = run_hive("hive-member", *commands[action])
+                    self._send(200, json.dumps({"ok": True, "detail": detail}), "application/json")
+                    return
+                if self.path == "/api/room":
+                    body = req.get("message", "")
+                    if not isinstance(body, str) or not body.strip() or len(body) > 12000:
+                        raise ValueError("message must be 1–12000 characters")
+                    targets = room_targets(body)
+                    run_hive("hive", "join", WEB_MEMBER)
+                    run_hive("hive", "say", "-", input_text=body, member=WEB_MEMBER)
+                    failed = {}
+                    if targets:
+                        prompt = re.sub(r"\s+", " ", body).strip()
+                        with ThreadPoolExecutor(max_workers=4) as pool:
+                            jobs = {pool.submit(run_hive, "hive-member", "send", target,
+                                                f"Message from Beekeeper in the Room: {prompt}"): target
+                                    for target in targets}
+                            for job in as_completed(jobs):
+                                try:
+                                    job.result()
+                                except Exception as exc:
+                                    failed[jobs[job]] = str(exc)
+                    self._send(200, json.dumps({"ok": True, "sent": sorted(set(targets) - failed.keys()),
+                                                 "failed": failed}), "application/json")
+                    return
+                member = req.get("member", "")
+                prompt = req.get("prompt", "")
+                if not MEMBER_RE.fullmatch(member):
+                    raise ValueError("valid member name required")
+                if not prompt:
+                    raise ValueError("prompt text required")
+
+                run_hive("hive-member", "send", member, prompt)
+
+                self._send(200, json.dumps({"ok": True}), "application/json")
+            except Exception as e:
+                self._send(400, json.dumps({"ok": False, "error": str(e)}), "application/json")
+            return
+        self._send(404, "not found\n", "text/plain")
+
+    def handle_websocket(self, url):
+        if not self._same_origin():
+            self._send(403, "cross-origin request denied\n", "text/plain")
+            return
+        if self.headers.get("Upgrade", "").lower() != "websocket":
+            self._send(400, "websocket upgrade required\n", "text/plain")
+            return
+        qs = parse_qs(url.query)
+        if url.path == "/ws/shell":
+            mode = "steer"
+            session_name = None
+            command = [shutil.which("bash") or "/bin/bash", "-l"]
+            cwd = str(HIVE_ROOT / "projects")
+        else:
+            member = qs.get("member", [""])[0]
+            mode = qs.get("mode", ["steer"])[0]
+            if not MEMBER_RE.fullmatch(member) or member == WEB_MEMBER or not (HIVE_ROOT / "members" / member).is_dir():
+                self._send(400, "unknown member\n", "text/plain")
+                return
+            if mode not in ("watch", "steer"):
+                self._send(400, "invalid terminal mode\n", "text/plain")
+                return
+            session_name = f"=hive-{member}"
+            command = tmux_cmd("attach-session", *(["-r"] if mode == "watch" else []), "-t", session_name)
+            cwd = None
+
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        try:
+            if len(base64.b64decode(key, validate=True)) != 16:
+                raise ValueError
+        except (ValueError, binascii.Error):
+            self._send(400, "invalid websocket key\n", "text/plain")
+            return
+        accept_val = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+
+        self.send_response(101, "Switching Protocols")
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept_val)
+        self.end_headers()
+
+        bridge = TerminalBridge(command, mode, self.request, session_name, cwd)
+        bridge.start()
+        try:
+            while bridge.running and (bridge.proc is None or bridge.proc.poll() is None):
+                time.sleep(0.1)
+        finally:
+            bridge.stop()
 
     do_HEAD = do_GET
 

@@ -32,5 +32,11 @@ it wholesale.
 If the missing thing is genuinely human intent, exceptional authority, or
 machine-admin/root access, ask the Beekeeper.
 
-Hive CLI: `hive say <msg>`, `hive room`, `hive claim|release <resource>`,
+To ask an existing member to work, use `hive message <member> <request>`.
+It wakes a stopped session and sends the request as its first prompt. For a
+bounded subtask with claims, use `hive delegate <member> --task <request>`;
+the target reports completion with `hive delegate done <summary>`.
+
+Hive CLI: `hive say <msg>`, `hive room`, `hive message <member> <msg>`,
+`hive delegate <member> --task <msg>`, `hive claim|release <resource>`,
 `hive claims`, `hive knowledge search <query>`.

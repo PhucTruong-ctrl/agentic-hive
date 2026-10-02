@@ -58,7 +58,7 @@ in
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Serve the read-only Beekeeper dashboard (hive-web).";
+        description = "Serve the Beekeeper dashboard and terminal (hive-web).";
       };
       port = lib.mkOption {
         type = lib.types.port;
@@ -132,24 +132,15 @@ in
       };
     };
 
-    # Read-only dashboard: its own user, read access through the hive group,
-    # everything else locked down.
-    users.users.hive-web = lib.mkIf cfg.web.enable {
-      isSystemUser = true;
-      group = "hive-web";
-      extraGroups = [ "hive" ];
-      description = "Agentic Hive dashboard";
-    };
-    users.groups.hive-web = lib.mkIf cfg.web.enable { };
-
+    # Beekeeper dashboard and shell, running as the non-root hive user.
     systemd.services.hive-web = lib.mkIf cfg.web.enable {
-      description = "Agentic Hive Beekeeper dashboard (read-only)";
+      description = "Agentic Hive Beekeeper dashboard";
       wantedBy = [ "multi-user.target" ];
       after = [
         "network.target"
         "agentic-hive-init.service"
       ];
-      path = [ pkgs.git ];
+      path = [ pkgs.git pkgs.tmux ];
       environment = {
         HIVE_ROOT = cfg.root;
         # git refuses repos owned by another user unless marked safe.
@@ -159,16 +150,17 @@ in
       };
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/hive-web --address 0.0.0.0 --port ${toString cfg.web.port}";
-        User = "hive-web";
-        Group = "hive-web";
-        SupplementaryGroups = [ "hive" ];
+        User = "hive";
+        Group = "hive";
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
         CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ProtectHome = true;
-        ReadOnlyPaths = [ cfg.root ];
-        PrivateTmp = true;
+        # The browser host shell needs the hive account's own home for history
+        # and normal CLI configuration; Unix permissions still separate users.
+        ProtectHome = false;
+        ReadWritePaths = [ cfg.root "/home/hive" ];
+        PrivateTmp = false;
         PrivateDevices = true;
         ProtectKernelTunables = true;
         ProtectKernelModules = true;

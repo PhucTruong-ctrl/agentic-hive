@@ -87,7 +87,7 @@ hook carol Stop >/dev/null
 check "telemetry written" test "$(jq -r .status "$HIVE_ROOT/telemetry/members/carol.json")" = idle
 
 # Codex uses the same adapter; telemetry records the harness.
-HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
+CODEX_HOME="$HIVE_ROOT/cx" HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
 check "codex telemetry harness" test "$(jq -r .harness "$HIVE_ROOT/telemetry/members/bob.json")" = codex
 
 # Hook is a no-op outside Hive.
@@ -127,5 +127,33 @@ printf '%s\n' '{"type":"event_msg","payload":{"type":"token_count","rate_limits"
 CODEX_HOME="$HIVE_ROOT/cx" HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
 check "codex quota recorded" test "$(jq -r '[.windows[] | "\(.name)=\(.used_percent)"] | join(",")' "$HIVE_ROOT/telemetry/quota/codex.json")" = "5h=12.5,week=64"
 check "dashboard shows quota" grep -q 'QUOTA codex: 5h 12% · week 64%' <(hive-dash --once)
+
+# Delegation.
+mkdir -p "$HIVE_ROOT/test-bin"
+cat >"$HIVE_ROOT/test-bin/hive-member" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$HIVE_ROOT/session-calls"
+[[ ${HIVE_TEST_FAIL:-0} != 1 ]]
+EOF
+chmod +x "$HIVE_ROOT/test-bin/hive-member"
+export HIVE_MEMBER_BIN="$HIVE_ROOT/test-bin/hive-member"
+HIVE_MEMBER=alice hive delegate bob --task "refactor parser" --worktree "/tmp/wt" --branch "bob/parser" --claim "data/parser.json" >/dev/null
+check "delegation sends work prompt" grep -q '^send bob Delegated task from alice: refactor parser' "$HIVE_ROOT/session-calls"
+check "delegation creates state" test -f "$HIVE_ROOT/members/bob/state/delegation.json"
+check "delegation depth is 1" test "$(jq -r .depth "$HIVE_ROOT/members/bob/state/delegation.json")" = "1"
+check "delegation announced in Room" grep -q 'DELEGATE -> bob: refactor parser' "$HIVE_ROOT/ROOM.md"
+check "claim transferred to bob" grep -q 'bob -> data/parser.json' <(hive claims)
+check "nested delegation rejected" bash -c '! HIVE_MEMBER=bob hive delegate carol --task "nested" 2>/dev/null'
+check "conflicting claim rejected" bash -c '! HIVE_MEMBER=carol hive delegate alice --task "conflict" --claim "data/parser.json" 2>/dev/null'
+HIVE_MEMBER=bob hive delegate done "parser refactored" >/dev/null
+check "delegation done archives state" test -f "$HIVE_ROOT/members/bob/state/delegation.done.json"
+check "delegation claim released" test ! -d "$HIVE_ROOT/claims/data%2Fparser.json"
+check "delegation done announced in Room" grep -q 'DONE (delegated by alice): parser refactored' "$HIVE_ROOT/ROOM.md"
+HIVE_MEMBER=alice hive message carol "review parser" >/dev/null
+check "member message invokes member send" grep -q '^send carol Message from Hive member alice: review parser$' "$HIVE_ROOT/session-calls"
+check "member message recorded in Room" grep -q 'MESSAGE -> carol: review parser' "$HIVE_ROOT/ROOM.md"
+before=$(cat "$HIVE_ROOT/.room-generation")
+check "failed member delivery is reported" bash -c '! HIVE_TEST_FAIL=1 HIVE_MEMBER=alice hive message carol "unavailable task" >/dev/null 2>&1'
+check "failed member delivery is not announced" test "$(cat "$HIVE_ROOT/.room-generation")" = "$before"
 
 echo "all $pass checks passed"

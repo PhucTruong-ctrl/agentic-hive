@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hive</title>
+<link rel="stylesheet" href="/static/xterm.css">
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --ink: #1d1c1a; --muted: #6f6b63; --line: #e4e1da;
@@ -40,8 +41,6 @@
   .bar { height: 4px; background: var(--chip); border-radius: 2px; margin-top: 8px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
 
-  .grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; }
-  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 16px; }
   section h2 { margin: 0 0 10px; font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
   section h2 .n { color: var(--ink); }
@@ -67,51 +66,165 @@
   td.res { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
   td.dim, .dim { color: var(--muted); white-space: nowrap; }
 
-  .room { display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow-y: auto; }
-  .e { border-top: 1px solid var(--line); padding-top: 10px; }
-  .e:first-child { border-top: 0; padding-top: 0; }
-  .e .h { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; flex-wrap: wrap; }
-  .e .gen { font-family: var(--mono); color: var(--muted); }
-  .e .who { font-weight: 600; font-family: var(--mono); }
-  .e .when { color: var(--muted); margin-left: auto; }
-  .e .body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
-  .e .body code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 0 4px; border-radius: 4px; }
+  .room-panel { display: flex; flex-direction: column; height: min(85vh, 1000px); min-height: 600px; }
+  .room-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .room-heading h2 { margin-bottom: 10px; }
+  .room-expand { border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; background: var(--panel);
+    color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; margin-bottom: 10px; }
+  .room-expand:hover { border-color: var(--accent); }
+  body.room-expanded { overflow: hidden; }
+  body.room-expanded::before { content: ""; position: fixed; inset: 0; z-index: 9997; background: rgba(0,0,0,.7); }
+  body.room-expanded .room-panel { position: fixed; z-index: 9998; inset: 3vh 3vw; width: auto; height: auto;
+    min-height: 0; margin: 0; box-shadow: 0 16px 48px rgba(0,0,0,.4); }
+  @media (max-width: 640px) { body.room-expanded .room-panel { inset: 0; border-radius: 0; } }
+  .room-scroll { flex: 1; min-height: 0; position: relative; }
+  .room { height: 100%; overflow-y: auto; padding-right: 3px; }
+  .e { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 9px; padding: 10px 2px;
+    --sender-color: hsl(var(--sender-hue) 62% 42%); border-top: 1px solid var(--line); border-left: 3px solid var(--sender-color); }
+  .e:first-child { border-top: 0; }
+  .e.mine { background: color-mix(in srgb, var(--accent) 7%, var(--panel)); }
+  .e .avatar { width: 27px; height: 27px; margin-left: 5px; display: grid; place-items: center; border-radius: 7px;
+    background: color-mix(in srgb, var(--sender-color) 18%, var(--panel)); color: var(--sender-color);
+    font-family: var(--mono); font-weight: 700; font-size: 11px; }
+  .e .content { min-width: 0; }
+  .e .h { display: flex; gap: 6px; align-items: baseline; font-size: 12px; flex-wrap: wrap; }
+  .e .who { padding: 0; border: 0; background: none; color: var(--sender-color); font: 700 12.5px var(--mono);
+    cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+  .e .who:hover { text-decoration: underline; }
+  .e.mine .who { cursor: default; }
+  .e .role, .e .gen { color: var(--muted); font-size: 11px; }
+  .e .when { color: var(--muted); margin-left: auto; white-space: nowrap; }
+  .e .body { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; line-height: 1.5; }
+  .e .body code { font-family: var(--mono); font-size: 12.5px; background: var(--chip); padding: 1px 4px; border-radius: 4px; }
+  .reply-quote { border-left: 3px solid var(--accent); background: var(--chip); border-radius: 0 5px 5px 0;
+    padding: 5px 8px; margin-bottom: 5px; color: var(--muted); font-size: 12px; }
+  .reply-quote b { color: var(--ink); }
+  .reply-action { border: 0; padding: 1px 0; background: none; color: var(--muted); font: 11px system-ui; cursor: pointer; }
+  .reply-action:hover { color: var(--accent); text-decoration: underline; }
+  .mention { border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 5px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel)); color: var(--accent); font: 600 12px var(--mono);
+    padding: 1px 4px; cursor: pointer; }
+  .mention:hover { border-color: var(--accent); }
+  .jump-latest { position: absolute; right: 10px; bottom: 8px; z-index: 1; border: 1px solid var(--accent);
+    border-radius: 20px; padding: 5px 10px; background: var(--panel); color: var(--accent); font: 600 12px system-ui; cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12); }
+  .jump-latest[hidden] { display: none; }
   .e.new { animation: flash 2.5s ease-out; }
+  @media (prefers-color-scheme: dark) { .e { --sender-color: hsl(var(--sender-hue) 70% 65%); } }
   @keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
 
-  .q { display: grid; grid-template-columns: 70px 52px 1fr auto; gap: 6px 10px; align-items: center; font-size: 13px; }
-  .q + .q { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
-  .q .who { font-weight: 600; font-family: var(--mono); font-size: 12.5px; grid-column: 1 / -1; display: flex; gap: 8px; align-items: baseline; }
-  .q .who .dim { font-weight: 400; font-family: inherit; font-size: 12px; }
-  .q .win { color: var(--muted); }
-  .q .pct { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
-  .q .bar { margin-top: 0; height: 6px; }
-  .q .bar.hot i { background: var(--dead); }
-  .q .bar.warm i { background: var(--idle); }
-  .q .bar.ok i { background: var(--working); }
-  .q .reset { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .cmds { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
-  .attach { display: flex; gap: 6px; align-items: center; }
-  .attach .verb { width: 48px; flex: none; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-  .dead .attach .verb, .never .attach .verb { color: var(--accent); }
-  .attach code { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; background: var(--chip);
-                 padding: 3px 6px; border-radius: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .attach button { font: inherit; font-size: 11.5px; border: 1px solid var(--line); background: var(--panel);
-                   color: var(--ink); border-radius: 5px; padding: 2px 8px; cursor: pointer; }
-  .attach button:hover { border-color: var(--accent); }
+
+  .term-modal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; }
+  .term-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(2px); }
+  .term-dialog { position: relative; width: 95vw; max-width: 1200px; height: 90vh; height: 90dvh; background: var(--panel);
+                 border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column;
+                 box-shadow: 0 16px 48px rgba(0,0,0,0.5); overflow: hidden; }
+  @media (max-width: 640px) {
+    .term-dialog { position: fixed; inset: 0; width: 100vw; width: 100%; height: 100vh; height: 100dvh;
+                   max-width: none; border-radius: 0; border: none; }
+    .term-header { padding: 6px 10px; gap: 6px; }
+    .term-title { font-size: 11.5px; }
+    .term-controls { gap: 4px; }
+    .term-zoom button { padding: 3px 6px; font-size: 11px; }
+    .term-steer-bar { padding: 6px 8px; gap: 6px; }
+    .term-steer-bar input { font-size: 12px; padding: 6px 8px; }
+    .term-steer-bar button { padding: 6px 12px; font-size: 12px; }
+  }
+  .term-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px;
+                 border-bottom: 1px solid var(--line); background: var(--chip); flex-shrink: 0; }
+  .term-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-family: var(--mono); font-size: 13px; }
+  .term-badge { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px;
+                background: var(--panel); border: 1px solid var(--line); }
+  .term-badge.steer { color: var(--accent); border-color: var(--accent); }
+  .term-controls { display: flex; align-items: center; gap: 8px; }
+  .term-zoom { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin-left: 2px; }
+  .term-zoom button { border: none; background: var(--panel); color: var(--ink); font-family: var(--mono);
+                      font-size: 12px; font-weight: 600; padding: 4px 8px; cursor: pointer; }
+  .term-zoom button:hover { background: var(--chip); color: var(--accent); }
+  .term-zoom button.active { background: var(--accent); color: #000; font-weight: 700; }
+  .term-close { background: none; border: 1px solid var(--line); border-radius: 5px; width: 28px; height: 28px;
+                display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); margin-left: 2px; }
+  .term-close:hover { color: var(--ink); border-color: var(--accent); }
+  .term-container { flex: 1; min-height: 0; background: #0d0d0d; padding: 4px 6px;
+                    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; position: relative; }
+  .term-container .xterm { height: 100%; width: max-content; min-width: 100%; }
+  .term-container .xterm-viewport { overflow-y: auto !important; }
+  .term-steer-bar { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--panel); flex-shrink: 0; }
+  .term-steer-bar input { flex: 1; font-family: var(--mono); font-size: 13px; background: var(--chip);
+                          color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; min-width: 0; }
+  .term-steer-bar input:focus { outline: none; border-color: var(--accent); }
+  .term-steer-bar button { font: inherit; font-size: 13px; font-weight: 600; padding: 6px 16px; border-radius: 6px;
+                           border: 1px solid var(--accent); background: var(--accent); color: #000; cursor: pointer; flex-shrink: 0; }
+  .term-footer { padding: 4px 14px; font-size: 11px; font-family: var(--mono); color: var(--muted);
+                 background: var(--chip); border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-shrink: 0; }
+
   .commit { font-size: 12.5px; padding: 5px 0; border-top: 1px solid var(--line); }
   .commit:first-child { border-top: 0; }
   .commit .h { font-family: var(--mono); color: var(--accent); }
+  .tabs, .member-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+  .tabs button, .member-tabs button, .top-action { font: inherit; cursor: pointer; border: 1px solid var(--line);
+    color: var(--ink); background: var(--panel); border-radius: 7px; padding: 7px 12px; }
+  .tabs button.active, .member-tabs button.active { border-color: var(--accent); color: var(--accent); background: var(--chip); font-weight: 700; }
+  .panel[hidden] { display: none; }
+  .dashboard-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; margin-bottom: 16px; }
+  .dashboard-grid.activity { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-grid > section { min-width: 0; margin-bottom: 0; }
+  @media (max-width: 900px) { .dashboard-grid, .dashboard-grid.activity { grid-template-columns: minmax(0, 1fr); } }
+  .member-tabs { margin-top: 4px; }
+  .action-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .action-row button { font: inherit; font-size: 12px; cursor: pointer; padding: 5px 9px;
+    background: var(--chip); border: 1px solid var(--line); color: var(--ink); border-radius: 6px; }
+  .action-row button:hover, .top-action:hover { border-color: var(--accent); }
+  .action-row button:disabled { opacity: .45; cursor: wait; }
+  .action-row .icon-button { width: 32px; height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+  .action-row .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round; }
+  .last-room { margin-top: 9px; padding: 7px 9px; border-radius: 6px; background: var(--chip);
+    color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .last-room b { color: var(--ink); }
+  .room-compose { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .room-compose textarea { width: 100%; min-height: 72px; max-height: 180px; resize: vertical; font: inherit; color: var(--ink);
+    background: var(--chip); border: 1px solid var(--line); border-radius: 7px; padding: 9px; }
+  .room-compose .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .room-compose button { font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  .room-compose button.primary { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 700; margin-left: auto; }
+  .room-compose .hint { color: var(--muted); font-size: 12px; }
+  .room-compose .recipients { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .room-compose .recipients b { color: var(--accent); }
+  .reply-draft { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 6px 8px;
+    background: var(--chip); border-left: 3px solid var(--accent); border-radius: 0 5px 5px 0; font-size: 12px; }
+  .reply-draft[hidden] { display: none; }
+  .reply-draft .context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .reply-draft button { border: 0; background: none; color: var(--muted); cursor: pointer; font: 16px system-ui; }
+  .feedback { color: var(--muted); font-size: 12px; min-height: 18px; }
+  .feedback.error { color: var(--dead); }
+  .quota-stat { grid-column: span 2; }
+  .quota-lines { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 7px 12px; margin-top: 4px; }
+  .quota-window { min-width: 0; font-size: 12px; }
+  .quota-window .label { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; }
+  .quota-window .label span:first-child { overflow: hidden; text-overflow: ellipsis; }
+  .quota-window small { color: var(--muted); font-size: 11px; }
+  .quota-window .bar { margin-top: 3px; }
+  @media (max-width: 640px) { .host { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   footer { color: var(--muted); font-size: 12px; margin-top: 8px; }
 </style>
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="icon-terminal" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="m6 8 4 4-4 4M12 16h6"/></symbol>
+  <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10M6.2 5.8a9 9 0 1 0 11.6 0"/></symbol>
+  <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+  <symbol id="icon-restart" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 1-2.3-5.7M20 4v7h-7"/></symbol>
+  <symbol id="icon-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+</svg>
 <div class="wrap" id="app">
   <header>
     <h1><span class="hex">⬡</span> Hive</h1>
     <span class="meta"><span class="status-dot"></span><span id="host-name">…</span>
       · room generation <b id="gen">–</b> · updated <span id="updated">–</span>
       <span class="stale-msg">· connection lost, retrying</span></span>
+    <button class="top-action" onclick="openTerminal(null)">Host shell</button>
   </header>
 
   <div class="host">
@@ -119,41 +232,103 @@
     <div class="stat"><div class="k">Memory</div><div class="v" id="mem">–</div><div class="bar"><i id="mem-bar"></i></div></div>
     <div class="stat"><div class="k">Disk (hive)</div><div class="v" id="disk">–</div><div class="bar"><i id="disk-bar"></i></div></div>
     <div class="stat"><div class="k">Load</div><div class="v" id="load">–</div><div class="bar"><i id="load-bar"></i></div></div>
+    <div class="stat quota-stat"><div class="k">Quota</div><div class="quota-lines" id="quota"></div></div>
   </div>
 
-  <div class="grid">
-    <div>
-      <section>
-        <h2>Quota</h2>
-        <div id="quota"></div>
-      </section>
-      <section>
-        <h2>Members <span class="n" id="m-count"></span></h2>
-        <div class="members" id="members"></div>
-      </section>
-      <section>
-        <h2>Claims <span class="n" id="c-count"></span></h2>
-        <div id="claims"></div>
-      </section>
-      <section>
-        <h2>Recent commits</h2>
-        <div id="git"></div>
-      </section>
+  <nav class="tabs" aria-label="Dashboard views">
+    <button class="active" data-tab="overview">Members &amp; Room</button><button data-tab="activity">Claims &amp; Commits</button>
+  </nav>
+  <div class="panel dashboard-grid" id="panel-overview">
+  <section>
+    <h2>Members <span class="n" id="m-count"></span></h2>
+    <nav class="member-tabs" aria-label="Member status">
+      <button class="active" data-member-tab="working">Working <span id="working-count"></span></button>
+      <button data-member-tab="idle">Idle <span id="idle-count"></span></button>
+      <button data-member-tab="inactive">Inactive <span id="inactive-count"></span></button>
+    </nav>
+    <div class="members" id="members"></div>
+  </section>
+  <section class="room-panel" id="room-panel">
+    <div class="room-heading"><h2>Room <span class="n" id="r-count"></span></h2><button class="room-expand" id="room-expand" type="button" onclick="toggleRoomExpanded()" aria-label="Expand Room" aria-expanded="false">Expand</button></div>
+    <div class="room-scroll"><div class="room" id="room" role="log" aria-label="Room messages" aria-live="off"></div>
+      <button class="jump-latest" id="jump-latest" onclick="jumpToLatest()" hidden>↓ Latest messages</button></div>
+    <div class="room-compose">
+      <div class="reply-draft" id="reply-draft" hidden><span class="context" id="reply-context"></span><button type="button" onclick="cancelReply()" title="Cancel reply" aria-label="Cancel reply">×</button></div>
+      <textarea id="room-message" maxlength="12000" aria-label="Room message" placeholder="Message the Room… Type @member or @all to wake and message agents."></textarea>
+      <div class="recipients" id="room-recipients">Room only · mention a member to send them a prompt</div>
+      <div class="tools">
+        <span class="hint">Enter to send · Shift+Enter for a new line</span>
+        <button class="primary" id="room-send" onclick="sendRoomMessage()">Send</button>
+      </div>
+      <div class="feedback" id="room-feedback" role="status"></div>
     </div>
-    <div>
-      <section>
-        <h2>Room <span class="n" id="r-count"></span></h2>
-        <div class="room" id="room"></div>
-      </section>
-    </div>
+  </section>
   </div>
-  <footer>Read-only. Hands are SSH, tmux and git; this page only watches. Refreshes every 3 s.</footer>
+  <div class="panel dashboard-grid activity" id="panel-activity" hidden>
+    <section><h2>Claims <span class="n" id="c-count"></span></h2><div id="claims"></div></section>
+    <section><h2>Recent commits</h2><div id="git"></div></section>
+  </div>
+  <footer>Hive dashboard · refreshes every 3 seconds</footer>
 </div>
 
+<div id="term-modal" class="term-modal" style="display:none">
+  <div class="term-backdrop" onclick="closeTerminal()"></div>
+  <div class="term-dialog">
+    <div class="term-header">
+      <div class="term-title">
+        <span class="hex">⬡</span> <span id="term-member-name">member</span>
+        <span class="term-badge steer" id="term-badge">TERMINAL</span>
+      </div>
+      <div class="term-controls">
+        <div class="term-zoom" title="Font size & screen fitting">
+          <button id="term-btn-fit" class="active" onclick="toggleFit()" title="Fit 80 cols to screen width">Fit</button>
+          <button onclick="zoomTerminal(-1)" title="Smaller font">A-</button>
+          <button onclick="zoomTerminal(1)" title="Larger font">A+</button>
+        </div>
+        <button class="term-close" onclick="closeTerminal()" title="Close terminal">✕</button>
+      </div>
+    </div>
+    <div id="term-container" class="term-container"></div>
+    <div class="term-steer-bar">
+      <input type="text" id="term-steer-input" placeholder="Send a prompt or shell command…" onkeydown="if(event.key==='Enter') sendTerminalLine();">
+      <button onclick="sendTerminalLine()">Send</button>
+    </div>
+    <div class="term-footer">
+      <span id="term-status">Ready</span>
+      <span id="term-dim">--</span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/xterm.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const inlineCode = s => esc(s).replace(/`([^`\n]+)`/g, "<code>$1</code>");
+function formatRoomBody(body, known) {
+  const reply = /^> Reply to ([a-z0-9][a-z0-9._-]{0,63}) · Room #(\d+): ([^\n]*)\n\n/.exec(body);
+  const quoted = reply ? `<div class="reply-quote"><b>↳ ${esc(reply[1])} · #${esc(reply[2])}</b><br>${esc(reply[3])}</div>` : "";
+  if (reply) body = body.slice(reply[0].length);
+  const token = /`([^`\n]+)`|@([a-z0-9][a-z0-9._-]{0,63})/g;
+  let html = "", offset = 0, match;
+  while ((match = token.exec(body))) {
+    html += esc(body.slice(offset, match.index));
+    if (match[1] !== undefined) html += `<code>${esc(match[1])}</code>`;
+    else {
+      const name = match[2].replace(/[.,;:]+$/, "");
+      const suffix = match[2].slice(name.length);
+      html += known.has(name) ? `<button class="mention" type="button" data-mention="${esc(name)}" title="Mention @${esc(name)}">@${esc(name)}</button>${esc(suffix)}` : esc(match[0]);
+    }
+    offset = token.lastIndex;
+  }
+  return quoted + html + esc(body.slice(offset));
+}
+function senderHue(name) {
+  let hash = 0;
+  for (const char of name) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 16), 0x7feb352d) >>> 0;
+  hash = Math.imul(hash ^ (hash >>> 15), 0x846ca68b) >>> 0;
+  return hash % 360;
+}
 const gib = b => (b / 1073741824).toFixed(1);
 function ago(iso) {
   if (!iso) return "–";
@@ -166,24 +341,118 @@ function ago(iso) {
 const bar = (id, pct) => { $(id).style.width = Math.max(0, Math.min(100, pct)) + "%"; };
 
 let lastGen = null;
+let dashboardData = null;
+let currentTab = "overview";
+let currentMemberTab = "working";
+let memberTabChosen = false;
+let unseenRoom = 0;
+let replyTo = null;
+let renderedRoomKey = null;
 
-// Copyable commands per member state. The page never runs anything itself.
-function commands(m) {
-  const n = m.member;
-  if (m.state === "working") return [
-    ["attach", `hive-attach ${n}`],
-    ["restart", `hive-session restart ${n} --force`],
-  ];
-  if (m.state === "idle") return [
-    ["attach", `hive-attach ${n}`],
-    ["restart", `hive-session restart ${n}`],
-    ["kill", `hive-session kill ${n}`],
-  ];
-  // wake resumes the last conversation (or starts one) and attaches
-  return [[m.state === "dead" ? "wake" : "start", `hive-session wake ${n}`]];
+function showTab(tab) {
+  currentTab = tab;
+  window.location.hash = tab;
+  for (const name of ["overview", "activity"]) {
+    $("panel-" + name).hidden = name !== tab;
+    document.querySelector(`[data-tab="${name}"]`).classList.toggle("active", name === tab);
+  }
+}
+
+function showMemberTab(tab) {
+  memberTabChosen = true;
+  currentMemberTab = tab;
+  document.querySelectorAll("[data-member-tab]").forEach(b => b.classList.toggle("active", b.dataset.memberTab === tab));
+  if (dashboardData) renderMembers(dashboardData.members);
+}
+
+function renderMembers(all) {
+  const counts = {working: 0, idle: 0, inactive: 0};
+  all.forEach(m => counts[m.state === "working" ? "working" : m.state === "idle" ? "idle" : "inactive"]++);
+  if (!memberTabChosen && counts.working === 0 && counts.idle > 0) currentMemberTab = "idle";
+  for (const [key, value] of Object.entries(counts)) $(key + "-count").textContent = `(${value})`;
+  document.querySelectorAll("[data-member-tab]").forEach(b => b.classList.toggle("active", b.dataset.memberTab === currentMemberTab));
+  $("m-count").textContent = `· ${all.length}`;
+  const ms = all.filter(m => currentMemberTab === "inactive" ? !["working", "idle"].includes(m.state) : m.state === currentMemberTab);
+  $("members").innerHTML = ms.length ? ms.map(m => {
+    const live = m.state === "working" || m.state === "idle";
+    const last = m.last_room;
+    return `<div class="m ${esc(m.state)}" data-member-card="${esc(m.member)}">
+      <div class="top"><span class="name">${esc(m.member)}</span><span class="badge">${esc(m.state)}</span></div>
+      <dl class="kv">
+        <dt>harness</dt><dd>${esc(m.harness || "–")}</dd>
+        <dt>activity</dt><dd>${ago(m.last_activity)}${m.last_tool ? " · " + esc(m.last_tool) : ""}</dd>
+        <dt>worktree</dt><dd>${esc(m.cwd_short || "–")}</dd>
+        <dt>branch</dt><dd>${esc(m.git_branch || "–")}</dd>
+        <dt>room</dt><dd>${m.undelivered ? `<span class="unseen">${m.undelivered} waiting</span>` : "up to date"}</dd>
+      </dl>
+      <div class="last-room"><b>Last Room message</b> · ${last ? ago(last.ts) : "none yet"}<br>${last ? esc(last.body.slice(0, 220)) : "No message from this member in the Room tail."}</div>
+      <div class="action-row">
+        ${live ? `<button class="icon-button" data-terminal="${esc(m.member)}" title="Open ${esc(m.member)} terminal" aria-label="Open ${esc(m.member)} terminal"><svg aria-hidden="true"><use href="#icon-terminal"/></svg></button>` : `<button class="icon-button" data-action="wake" data-member="${esc(m.member)}" title="Wake ${esc(m.member)}" aria-label="Wake ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-power"/></svg></button>`}
+        <button class="icon-button" data-copy="hive-attach ${esc(m.member)}" title="Copy attach command" aria-label="Copy attach command for ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-copy"/></svg></button>
+        ${live ? `<button class="icon-button" data-action="restart" data-member="${esc(m.member)}" title="Restart ${esc(m.member)}" aria-label="Restart ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-restart"/></svg></button><button class="icon-button" data-action="kill" data-member="${esc(m.member)}" title="Kill ${esc(m.member)}" aria-label="Kill ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-stop"/></svg></button>` : ""}
+      </div>
+    </div>`;
+  }).join("") : `<div class="empty">No ${currentMemberTab} members.</div>`;
+  updateRecipients();
+}
+
+function toggleRoomExpanded() {
+  const expanded = document.body.classList.toggle("room-expanded");
+  const button = $("room-expand");
+  button.textContent = expanded ? "Close" : "Expand";
+  button.setAttribute("aria-label", expanded ? "Close large Room" : "Expand Room");
+  button.setAttribute("aria-expanded", String(expanded));
+}
+
+function jumpToLatest() {
+  const list = $("room");
+  list.scrollTop = list.scrollHeight;
+  unseenRoom = 0;
+  $("jump-latest").hidden = true;
+}
+
+function renderRoom(entries, members) {
+  const list = $("room");
+  const key = entries.map(e => e.gen).join(",");
+  const identities = new Map(members.map(m => [m.member, `${m.harness || "agent"} · ${m.state}`]));
+  if (key === renderedRoomKey) {
+    [...list.querySelectorAll(".e")].forEach((card, index) => {
+      const post = entries[index];
+      card.querySelector(".role").textContent = post.member === "beekeeper" ? "You · Beekeeper" : (identities.get(post.member) || "member");
+      card.querySelector(".when").textContent = ago(post.ts);
+    });
+    return;
+  }
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 2;
+  const oldTop = list.scrollTop;
+  const known = new Set(["all", ...members.map(m => m.member)]);
+  const fresh = lastGen === null ? 0 : entries.filter(e => e.gen > lastGen).length;
+  list.innerHTML = entries.length ? entries.map(e => {
+    const mine = e.member === "beekeeper";
+    const hue = senderHue(e.member);
+    const role = mine ? "You · Beekeeper" : (identities.get(e.member) || "member");
+    const initials = mine ? "YOU" : e.member.split(/[-_.]/).map(p => p[0] || "").join("").slice(0, 3).toUpperCase();
+    return `<article class="e${mine ? " mine" : ""}${lastGen !== null && e.gen > lastGen ? " new" : ""}"
+      style="--sender-hue:${hue}">
+      <div class="avatar" aria-hidden="true">${esc(initials)}</div><div class="content">
+        <div class="h">${mine ? `<span class="who">${esc(e.member)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(e.member)} in Members">${esc(e.member)}</button>`}
+          <span class="role">${esc(role)}</span><span class="when" title="${esc(e.ts || "")}">${ago(e.ts)}</span></div>
+        <div class="body">${formatRoomBody(e.body, known)}</div>
+        <div class="gen">Room #${e.gen} · <button type="button" class="reply-action" data-reply-gen="${e.gen}">Reply</button></div>
+      </div></article>`;
+  }).join("") : `<div class="empty">The Room is quiet.</div>`;
+  renderedRoomKey = key;
+  if (atBottom || lastGen === null) jumpToLatest();
+  else {
+    list.scrollTop = oldTop;
+    unseenRoom += fresh;
+    $("jump-latest").hidden = unseenRoom === 0;
+    $("jump-latest").textContent = unseenRoom ? `↓ ${unseenRoom} new · Latest` : "↓ Latest messages";
+  }
 }
 
 function render(d) {
+  dashboardData = d;
   const h = d.host;
   $("host-name").textContent = h.hostname + " · " + d.hive_root;
   $("gen").textContent = d.generation;
@@ -195,24 +464,7 @@ function render(d) {
   $("disk").textContent = `${gib(h.disk_used)} / ${gib(h.disk_total)} GiB`; bar("disk-bar", 100 * h.disk_used / h.disk_total);
   $("load").textContent = h.load.map(x => x.toFixed(2)).join(" "); bar("load-bar", 100 * h.load[0] / h.cpus);
 
-  const order = {working: 0, idle: 1, dead: 2, never: 3};
-  const ms = [...d.members].sort((a, b) => order[a.state] - order[b.state] || a.member.localeCompare(b.member));
-  $("m-count").textContent = ms.length ? `· ${ms.filter(m => m.state === "working" || m.state === "idle").length} alive / ${ms.length}` : "";
-  $("members").innerHTML = ms.length ? ms.map(m => `
-    <div class="m ${m.state}">
-      <div class="top"><span class="name">${esc(m.member)}</span><span class="badge">${m.state}</span></div>
-      <dl class="kv">
-        <dt>harness</dt><dd>${esc(m.harness || "–")}${m.pid ? " · pid " + esc(m.pid) : ""}</dd>
-        <dt>activity</dt><dd>${ago(m.last_activity)}${m.last_tool ? " · " + esc(m.last_tool) : ""}</dd>
-        <dt>worktree</dt><dd>${esc(m.cwd_short || "–")}</dd>
-        <dt>branch</dt><dd>${esc(m.git_branch || "–")}</dd>
-        <dt>room</dt><dd>${m.undelivered ? `<span class="unseen">${m.undelivered} not yet delivered</span>` : "up to date"}</dd>
-        ${m.notes.length ? `<dt>notes</dt><dd>${m.notes.map(esc).join(", ")}</dd>` : ""}
-      </dl>
-      <div class="cmds">${commands(m).map(([label, cmd]) => `
-        <div class="attach"><span class="verb">${label}</span><code title="${esc(cmd)}">${esc(cmd)}</code><button data-copy="${esc(cmd)}">copy</button></div>`).join("")}
-      </div>
-    </div>`).join("") : `<div class="empty">No members yet — start one with <code>hive-launch &lt;member&gt;</code>.</div>`;
+  renderMembers(d.members);
 
   const until = iso => {
     if (!iso) return "";
@@ -223,18 +475,13 @@ function render(d) {
     return "resets in " + Math.round(s / 86400) + "d";
   };
   const qs = d.quota || [];
-  $("quota").innerHTML = qs.length ? qs.map(q => `
-    <div class="q">
-      <div class="who">${esc(q.harness)}${q.plan ? ` <span class="dim">${esc(q.plan)}</span>` : ""}
-        <span class="dim">· as of ${ago(q.updated_at)}${q.reported_by ? " via " + esc(q.reported_by) : ""}</span></div>
-      ${q.windows.length ? q.windows.map(w => {
-        const p = Math.round(w.used_percent ?? 0);
-        return `<span class="win">${esc(w.name)}</span><span class="pct">${w.used_percent == null ? "–" : p + "%"}</span>
-          <div class="bar ${p >= 90 ? "hot" : p >= 70 ? "warm" : "ok"}"><i style="width:${Math.min(100, p)}%"></i></div>
-          <span class="reset" title="${esc(w.resets_at || "")}">${until(w.resets_at)}</span>`;
-      }).join("") : `<span class="empty" style="grid-column:1/-1">no limit data reported yet</span>`}
-    </div>`).join("")
-    : `<div class="empty">No quota reported yet. Claude members report it through their status line; Codex members after their first tool call.</div>`;
+  $("quota").innerHTML = qs.length ? qs.map(q => q.windows.length ? q.windows.map(w => `
+    <div class="quota-window" title="${esc(q.harness)} · Updated ${ago(q.updated_at)}${q.reported_by ? " by " + esc(q.reported_by) : ""}">
+      <div class="label"><span><b>${esc(q.harness)}</b> · ${esc(w.name)}</span><span>${w.used_percent == null ? "–" : Math.round(w.used_percent) + "%"}</span></div>
+      <div class="bar"><i style="width:${Math.max(0, Math.min(100, Number(w.used_percent) || 0))}%"></i></div>
+      <small>${until(w.resets_at)}</small>
+    </div>`).join("") : `<div class="quota-window"><b>${esc(q.harness)}</b> · awaiting data</div>`).join("")
+    : `<span class="empty">No quota reported yet.</span>`;
 
   $("c-count").textContent = d.claims.length ? "· " + d.claims.length : "";
   $("claims").innerHTML = d.claims.length ? `<table>${d.claims.map(c => `
@@ -247,13 +494,7 @@ function render(d) {
     : `<div class="empty">No live members in a git worktree.</div>`;
 
   $("r-count").textContent = d.room.length ? `· last ${d.room.length}` : "";
-  const room = [...d.room].reverse();
-  $("room").innerHTML = room.length ? room.map(e => `
-    <div class="e${lastGen !== null && e.gen > lastGen ? " new" : ""}">
-      <div class="h"><span class="gen">[${e.gen}]</span><span class="who">${esc(e.member)}</span>
-        <span class="when" title="${esc(e.ts)}">${ago(e.ts)}</span></div>
-      <div class="body">${inlineCode(e.body)}</div>
-    </div>`).join("") : `<div class="empty">The Room is quiet.</div>`;
+  renderRoom(d.room, d.members);
   lastGen = d.generation;
 }
 
@@ -269,18 +510,385 @@ async function tick() {
     setTimeout(tick, 3000);
   }
 }
-document.addEventListener("click", e => {
-  const b = e.target.closest("button[data-copy]");
-  if (!b) return;
-  const text = b.dataset.copy, done = () => { b.textContent = "copied"; setTimeout(() => b.textContent = "copy", 1200); };
-  if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done); return; }
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return; }
   const t = document.createElement("textarea");  // plain http over Tailscale: legacy copy
   t.value = text; t.style.position = "fixed"; t.style.opacity = "0";
   document.body.appendChild(t); t.select();
-  try { document.execCommand("copy"); done(); } finally { t.remove(); }
+  try { document.execCommand("copy"); } finally { t.remove(); }
+}
+
+async function sendMemberAction(button) {
+  const {member, action} = button.dataset;
+  button.disabled = true;
+  try {
+    const res = await fetch("/api/member", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({member, action})});
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const next = await fetch("/api/state", {cache: "no-store"});
+    if (next.ok) render(await next.json());
+  } catch (err) {
+    alert(`${action} ${member} failed: ${err.message}`);
+  } finally { button.disabled = false; }
+}
+
+function updateRecipients() {
+  const text = $("room-message").value;
+  const names = new Set([...text.matchAll(/@([a-z0-9][a-z0-9._-]{0,63})/g)].map(m => m[1].replace(/[.,;:]+$/, "")));
+  const known = new Set((dashboardData?.members || []).map(m => m.member));
+  const unknown = [...names].filter(name => name !== "all" && !known.has(name));
+  const preview = $("room-recipients");
+  if (unknown.length) preview.innerHTML = `<span class="feedback error">Unknown member: ${unknown.map(name => `@${esc(name)}`).join(", ")}</span>`;
+  else if (names.has("all")) preview.innerHTML = "Sending a prompt to <b>@all</b> members";
+  else if (names.size) preview.innerHTML = `Sending a prompt to ${[...names].map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
+  else preview.textContent = "Room only · mention a member to send them a prompt";
+}
+
+function insertMention(name) {
+  if (!name) return;
+  const field = $("room-message");
+  const start = field.selectionStart, end = field.selectionEnd;
+  const prefix = start > 0 && !/\s/.test(field.value[start - 1]) ? " " : "";
+  field.setRangeText(`${prefix}@${name} `, start, end, "end");
+  updateRecipients();
+  field.focus();
+}
+
+function focusMember(name) {
+  const member = dashboardData?.members.find(m => m.member === name);
+  if (!member) return;
+  showTab("overview");
+  showMemberTab(["working", "idle"].includes(member.state) ? member.state : "inactive");
+  [...document.querySelectorAll("[data-member-card]")].find(card => card.dataset.memberCard === name)?.scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+function startReply(gen) {
+  const post = dashboardData?.room.find(e => e.gen === Number(gen));
+  if (!post) return;
+  const excerpt = post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " ").replace(/@/g, "").slice(0, 120);
+  replyTo = {gen: post.gen, member: post.member, excerpt};
+  $("reply-context").textContent = `Replying to ${post.member} · Room #${post.gen}: ${excerpt}`;
+  $("reply-draft").hidden = false;
+  $("room-message").maxLength = 12000 - `> Reply to ${post.member} · Room #${post.gen}: ${excerpt}\n\n`.length;
+  if (post.member !== "beekeeper" && !$("room-message").value.includes(`@${post.member}`)) insertMention(post.member);
+  $("room-message").focus();
+}
+
+function cancelReply() {
+  replyTo = null;
+  $("reply-draft").hidden = true;
+  $("room-message").maxLength = 12000;
+}
+
+async function sendRoomMessage() {
+  const field = $("room-message"), button = $("room-send"), feedback = $("room-feedback");
+  const draft = field.value.trim();
+  const message = replyTo ? `> Reply to ${replyTo.member} · Room #${replyTo.gen}: ${replyTo.excerpt}\n\n${draft}` : draft;
+  if (!draft) return;
+  if (message.length > 12000) {
+    feedback.classList.add("error");
+    feedback.textContent = "Message is too long. Shorten it before sending.";
+    return;
+  }
+  button.disabled = true;
+  feedback.classList.remove("error");
+  feedback.textContent = "Posting…";
+  try {
+    const res = await fetch("/api/room", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({message})});
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    field.value = "";
+    cancelReply();
+    updateRecipients();
+    const failures = Object.entries(data.failed || {});
+    feedback.classList.toggle("error", failures.length > 0);
+    feedback.textContent = failures.length ? `Posted to Room. Delivery failed: ${failures.map(([name, reason]) => `${name} (${reason})`).join(", ")}`
+      : `Posted to Room${data.sent.length ? ` and sent to ${data.sent.join(", ")}` : ""}.`;
+    const next = await fetch("/api/state", {cache: "no-store"});
+    if (next.ok) render(await next.json());
+  } catch (err) {
+    feedback.classList.add("error");
+    feedback.textContent = `Could not post: ${err.message}`;
+  } finally { button.disabled = false; }
+}
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.tab) return showTab(b.dataset.tab);
+  if (b.dataset.memberTab) return showMemberTab(b.dataset.memberTab);
+  if (b.dataset.roomMember) return focusMember(b.dataset.roomMember);
+  if (b.dataset.replyGen) return startReply(b.dataset.replyGen);
+  if (b.dataset.mention) return insertMention(b.dataset.mention);
+  if (b.dataset.terminal) return openTerminal(b.dataset.terminal);
+  if (b.dataset.action) return sendMemberAction(b);
+  if (b.dataset.copy) {
+    try {
+      await copyText(b.dataset.copy);
+      const old = b.innerHTML;
+      b.textContent = "✓";
+      b.title = "Copied attach command";
+      setTimeout(() => { b.innerHTML = old; b.title = "Copy attach command"; }, 1200);
+    } catch (err) { alert(`Copy failed: ${err.message}`); }
+  }
+});
+$("room-message").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendRoomMessage(); }
+});
+$("room-message").addEventListener("input", updateRecipients);
+$("room").addEventListener("scroll", () => {
+  const list = $("room");
+  if (list.scrollHeight - list.scrollTop - list.clientHeight < 2) {
+    unseenRoom = 0;
+    $("jump-latest").hidden = true;
+  }
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && document.body.classList.contains("room-expanded")) toggleRoomExpanded();
 });
 
+let activeTerm = null;
+let activeWs = null;
+let activeMember = null;
+let termFontSize = 13;
+let autoFit = true;
+
+function getCellDimensions() {
+  if (activeTerm && activeTerm._core && activeTerm._core._renderService && activeTerm._core._renderService.dimensions) {
+    const d = activeTerm._core._renderService.dimensions;
+    if (d.css && d.css.cell && d.css.cell.width > 0 && d.css.cell.height > 0) {
+      return { width: d.css.cell.width, height: d.css.cell.height };
+    }
+    if (d.actualCellWidth > 0 && d.actualCellHeight > 0) {
+      return { width: d.actualCellWidth, height: d.actualCellHeight };
+    }
+  }
+  // Precise DOM measurement fallback
+  const span = document.createElement("span");
+  span.style.fontFamily = 'ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace';
+  span.style.fontSize = termFontSize + "px";
+  span.style.lineHeight = "1.25";
+  span.style.position = "absolute";
+  span.style.visibility = "hidden";
+  span.style.whiteSpace = "pre";
+  span.textContent = "WWWWWWWWWW";
+  document.body.appendChild(span);
+  const w = span.getBoundingClientRect().width / 10;
+  const h = span.getBoundingClientRect().height || (termFontSize * 1.3);
+  document.body.removeChild(span);
+  return { width: Math.max(4, w), height: Math.max(8, h) };
+}
+
+function computeTermSize() {
+  const container = $("term-container");
+  if (!container) return { cols: 80, rows: 24 };
+
+  const isMobile = window.innerWidth < 640;
+  const availW = Math.max(100, container.clientWidth - 12);
+  const availH = Math.max(100, container.clientHeight - 8);
+
+  if (isMobile && autoFit) {
+    // Dynamically scale font size so 80 cols fits mobile screen width
+    const targetCols = 80;
+    const estimatedCellRatio = 0.605;
+    const fitSize = Math.max(6, Math.min(13, Math.floor(availW / (targetCols * estimatedCellRatio))));
+    if (fitSize !== termFontSize && activeTerm) {
+      termFontSize = fitSize;
+      activeTerm.options.fontSize = termFontSize;
+    }
+    const cell = getCellDimensions();
+    const rows = Math.max(8, Math.floor(availH / cell.height));
+    return { cols: targetCols, rows };
+  }
+
+  const cell = getCellDimensions();
+  const cols = Math.max(isMobile ? 80 : 40, Math.floor(availW / cell.width));
+  const rows = Math.max(8, Math.floor(availH / cell.height));
+  return { cols, rows };
+}
+
+function fitTerminal() {
+  if (!activeTerm) return;
+  const { cols, rows } = computeTermSize();
+  try {
+    if (activeTerm.cols !== cols || activeTerm.rows !== rows) {
+      activeTerm.resize(cols, rows);
+    }
+    const dimEl = $("term-dim");
+    if (dimEl) dimEl.textContent = `${cols}x${rows} (${termFontSize}px)`;
+  } catch(e) {}
+  if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+    activeWs.send(JSON.stringify({ type: 'resize', cols, rows }));
+  }
+}
+
+function toggleFit() {
+  autoFit = !autoFit;
+  const btn = $("term-btn-fit");
+  if (btn) btn.classList.toggle("active", autoFit);
+  if (!autoFit) {
+    termFontSize = window.innerWidth < 640 ? 11 : 13;
+    if (activeTerm) activeTerm.options.fontSize = termFontSize;
+  }
+  fitTerminal();
+}
+
+function zoomTerminal(delta) {
+  autoFit = false;
+  const btn = $("term-btn-fit");
+  if (btn) btn.classList.remove("active");
+  termFontSize = Math.max(6, Math.min(24, termFontSize + delta));
+  if (activeTerm) {
+    activeTerm.options.fontSize = termFontSize;
+    fitTerminal();
+  }
+}
+
+function openTerminal(member) {
+  activeMember = member;
+  $("term-member-name").textContent = member || "Host shell (hive user)";
+  $("term-badge").textContent = member ? "MEMBER" : "SHELL";
+  $("term-steer-input").placeholder = member ? "Send a prompt to this member…" : "Run a shell command…";
+  $("term-steer-input").value = "";
+
+  autoFit = window.innerWidth < 640;
+  const fitBtn = $("term-btn-fit");
+  if (fitBtn) fitBtn.classList.toggle("active", autoFit);
+
+  if (window.innerWidth < 640) {
+    termFontSize = 8;
+  } else {
+    termFontSize = 13;
+  }
+
+  $("term-modal").style.display = "flex";
+
+  if (!activeTerm) {
+    activeTerm = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace',
+      fontSize: termFontSize,
+      lineHeight: 1.25,
+      scrollback: 3000,
+      theme: {
+        background: '#0d0d0d',
+        foreground: '#e6e6e6',
+        cursor: '#e0a43a',
+      }
+    });
+    activeTerm.open($("term-container"));
+
+    activeTerm.onData(data => {
+      if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+        activeWs.send(JSON.stringify({ type: 'input', data: data }));
+      }
+    });
+
+    window.addEventListener('resize', () => {
+      setTimeout(fitTerminal, 60);
+    });
+  } else {
+    activeTerm.options.fontSize = termFontSize;
+    activeTerm.reset();
+  }
+
+  // Double trigger fit after modal paints to ensure container has dimensions
+  requestAnimationFrame(() => {
+    fitTerminal();
+    setTimeout(fitTerminal, 120);
+  });
+
+  connectTerminalWs();
+  activeTerm.focus();
+}
+
+function connectTerminalWs() {
+  if (activeWs) {
+    try { activeWs.close(); } catch(e) {}
+    activeWs = null;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const target = activeMember || "host shell";
+  const url = activeMember
+    ? `${proto}//${window.location.host}/ws/terminal?member=${encodeURIComponent(activeMember)}&mode=steer`
+    : `${proto}//${window.location.host}/ws/shell`;
+  $("term-status").textContent = `Connecting to ${target}…`;
+
+  const socket = new WebSocket(url);
+  activeWs = socket;
+  socket.binaryType = 'arraybuffer';
+
+  socket.onopen = () => {
+    if (activeWs !== socket) return;
+    $("term-status").textContent = `Connected to ${target}`;
+    fitTerminal();
+  };
+
+  socket.onmessage = evt => {
+    if (activeWs !== socket) return;
+    if (typeof evt.data === 'string') {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'status') $("term-status").textContent = msg.text;
+      } catch(e) {
+        activeTerm.write(evt.data);
+      }
+    } else {
+      const bytes = new Uint8Array(evt.data);
+      activeTerm.write(bytes);
+    }
+  };
+
+  socket.onclose = () => {
+    if (activeWs === socket) $("term-status").textContent = `Disconnected from ${target}.`;
+  };
+
+  socket.onerror = () => {
+    if (activeWs === socket) $("term-status").textContent = `Connection error to ${target}.`;
+  };
+}
+
+function closeTerminal() {
+  if (activeWs) {
+    try { activeWs.close(); } catch(e) {}
+    activeWs = null;
+  }
+  activeMember = null;
+  $("term-modal").style.display = "none";
+}
+
+async function sendTerminalLine() {
+  const input = $("term-steer-input");
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  if (!activeMember) {
+    if (!activeWs || activeWs.readyState !== WebSocket.OPEN) return;
+    activeWs.send(JSON.stringify({type: "input", data: prompt + "\n"}));
+    input.value = "";
+    return;
+  }
+  try {
+    const res = await fetch("/api/steer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ member: activeMember, prompt: prompt })
+    });
+    const d = await res.json();
+    if (d.ok) {
+      input.value = "";
+      $("term-status").textContent = `Steer prompt sent to ${activeMember}`;
+    } else {
+      alert("Error: " + (d.error || "Failed to steer"));
+    }
+  } catch(err) {
+    alert("Steer request failed: " + err.message);
+  }
+}
+
 const initial = /*__INITIAL_STATE__*/null;
+const initialTab = window.location.hash.slice(1);
+if (["overview", "members", "room"].includes(initialTab)) showTab("overview");
+if (["activity", "claims", "commits"].includes(initialTab)) showTab("activity");
 if (initial) render(initial);
 setTimeout(tick, initial ? 3000 : 0);
 </script>

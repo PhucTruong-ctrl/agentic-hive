@@ -1,1 +1,9 @@
 result
+result-*
+__pycache__/
+*.py[cod]
+.direnv/
+.env
+.env.*
+!.env.example
+.DS_Store

@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+# hive-member — lifecycle of Hive members (Beekeeper tool).
+#
+#   hive-member status [member]          what is running
+#   hive-member wake <member> [--fresh] [--message <text>]
+#                                         bring a member back, resuming its last
+#                                         conversation, and attach (--fresh: new
+#                                         conversation). Already running: attach.
+#   hive-member restart <member> [--force] [--fresh] [--message <text>]
+#                                         kill and wake (and attach); refuses while
+#                                         the member is working unless --force
+#   hive-member kill <member> [--force]  end the member's tmux session
+#   hive-member send <member> <message> wake if needed and start work
+#
+# Harness, directory and conversation come from the member's launch record
+# (members/<m>/state/launch.json, written by hive-launch) and telemetry.
+set -euo pipefail
+
+HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
+HIVE_USER="${HIVE_USER:-hive}"
+die() { printf 'hive-member: %s\n' "$*" >&2; exit 1; }
+say() { printf 'hive-member: %s\n' "$*"; }
+
+if [[ $(id -un) != "$HIVE_USER" ]]; then
+  exec sudo -u "$HIVE_USER" -- env TERM="${TERM:-xterm-256color}" HIVE_ROOT="$HIVE_ROOT" "$0" "$@"
+fi
+unset TMUX
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+
+tele() { jq -r "$2 // empty" "$HIVE_ROOT/telemetry/members/$1.json" 2>/dev/null || true; }
+launch() { jq -r "$2 // empty" "$HIVE_ROOT/members/$1/state/launch.json" 2>/dev/null || true; }
+
+has_session() { tmux has-session -t "=hive-$1" 2>/dev/null; }
+
+# Is the member's harness process alive (not just its tmux pane)?
+process_alive() {
+  local pid harness comm
+  pid=$(tele "$1" .pid); harness=$(tele "$1" .harness)
+  [[ $pid =~ ^[0-9]+$ && -d /proc/$pid ]] || return 1
+  comm=$(cat "/proc/$pid/comm" 2>/dev/null)
+  [[ $comm == "$harness"* || $comm == ".$harness"* || $comm == node* ]]
+}
+harness_alive() { has_session "$1" && process_alive "$1"; }
+
+working() { # active in the last 2 minutes
+  local last
+  [[ $(tele "$1" .status) == working ]] || return 1
+  last=$(tele "$1" .last_activity)
+  [[ -n $last ]] && (($(date +%s) - $(date -d "$last" +%s) < 120))
+}
+
+state() {
+  if harness_alive "$1"; then working "$1" && echo working || echo idle
+  elif has_session "$1"; then echo "dead (tmux shell open)"
+  elif [[ -f $HIVE_ROOT/telemetry/members/$1.json ]]; then echo dead
+  else echo never; fi
+}
+
+require_member() {
+  [[ -n ${1:-} ]] || { usage >&2; exit 2; }
+  [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "invalid member name: $1"
+  [[ -d $HIVE_ROOT/members/$1 ]] || die "unknown member '$1' (members: $(ls "$HIVE_ROOT/members" | tr '\n' ' '))"
+}
+
+mark_ended() {
+  local t="$HIVE_ROOT/telemetry/members/$1.json" tmp
+  [[ -f $t ]] || return 0
+  tmp=$(mktemp "$t.XXXXXX") && jq --arg now "$(date --iso-8601=seconds)" '.status = "ended" | .last_activity = $now' "$t" >"$tmp" &&
+    chmod 0664 "$tmp" && mv -f "$tmp" "$t" || rm -f "${tmp:-}"
+}
+
+cmd_status() {
+  local m
+  for m in $(ls "$HIVE_ROOT/members"); do
+    [[ -z ${1:-} || $m == "$1" ]] || continue
+    printf '%-24s %-24s %-7s %s\n' "$m" "$(state "$m")" "$(tele "$m" .harness || true)" "$(tele "$m" .session_id)"
+  done
+}
+
+cmd_kill() {
+  local m="$1" force="$2"
+  if working "$m" && harness_alive "$m" && ((!force)); then
+    die "$m is working right now (active <2m ago); use --force to kill anyway"
+  fi
+  if has_session "$m"; then
+    tmux kill-session -t "=hive-$m"
+    say "killed hive-$m"
+  else
+    say "no tmux session for $m"
+  fi
+  mark_ended "$m"
+}
+
+send_prompt() {
+  local m="$1" message="$2" buffer="hive-send-$$-$RANDOM"
+  harness_alive "$m" || die "$m has no running agent to receive the message"
+  printf '%s' "$message" | tmux load-buffer -b "$buffer" - || die "could not load message for $m"
+  tmux paste-buffer -d -p -b "$buffer" -t "=hive-$m:0.0" || die "could not paste message to $m"
+  # Let the agent finish handling the bracketed paste before submitting.
+  sleep 1
+  tmux send-keys -t "=hive-$m:0.0" Enter || die "could not submit message to $m"
+  say "sent message to $m"
+}
+
+cmd_wake() {
+  local m="$1" fresh="$2" message="${3:-}" no_attach="${4:-0}" harness dir sid args=()
+  # A newly launched harness may not have fired SessionStart yet. Do not
+  # mistake that short gap for a dead pane and kill it before it gets a prompt.
+  if has_session "$m" && [[ -n $message ]] && ! harness_alive "$m"; then
+    for _ in $(seq 20); do
+      sleep 0.25
+      harness_alive "$m" && break
+    done
+  fi
+  if harness_alive "$m"; then
+    say "$m is already running ($(state "$m"))"
+    [[ -z $message ]] || send_prompt "$m" "$message"
+    ((no_attach)) || attach "$m"
+    return 0
+  fi
+  # A pane left at a shell after the harness exited: replace it.
+  has_session "$m" && tmux kill-session -t "=hive-$m"
+
+  harness=$(launch "$m" .harness); harness=${harness:-$(tele "$m" .harness)}; harness=${harness:-claude}
+  dir=$(launch "$m" .dir); dir=${dir:-$(tele "$m" .cwd)}; dir=${dir:-$HIVE_ROOT/projects}
+  [[ -d $dir ]] || die "directory $dir no longer exists"
+  sid=$(tele "$m" .session_id)
+
+  if ((!fresh)) && [[ -n $sid ]]; then
+    case $harness in
+      claude) args=(--resume "$sid") ;;
+      codex) args=(resume "$sid") ;;
+    esac
+    say "waking $m ($harness in $dir), resuming conversation $sid"
+  else
+    say "waking $m ($harness in $dir) with a fresh conversation"
+  fi
+  [[ -z $message ]] || args+=("$message")
+  HIVE_LAUNCH_NO_ATTACH=1 hive-launch "$m" "$harness" "$dir" -- "${args[@]}"
+  ((no_attach)) || attach "$m"
+}
+
+# Attach when run from a terminal; otherwise just say how.
+attach() {
+  if [[ -t 0 && -t 1 ]]; then
+    exec tmux attach-session -t "=hive-$1"
+  fi
+  say "attach with: hive-attach $1"
+}
+
+verb="${1:-}"; (($#)) && shift
+member="" force=0 fresh=0 message="" no_attach=0
+if [[ $verb == send ]]; then
+  member="${1:-}"; (($#)) && shift
+  message="$*"
+  [[ -n ${message//[[:space:]]/} ]] || die "usage: hive-member send <member> <message>"
+  no_attach=1
+else
+  while (($#)); do
+    case $1 in
+      --force) force=1; shift ;;
+      --fresh) fresh=1; shift ;;
+      --no-attach) no_attach=1; shift ;;
+      --message) [[ $# -ge 2 ]] || die "--message requires text"; message="$2"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [[ -z $member ]] || die "only one member may be specified"; member="$1"; shift ;;
+    esac
+  done
+fi
+
+case $verb in
+  status | "") cmd_status "$member" ;;
+  wake | send) require_member "$member"; cmd_wake "$member" "$fresh" "$message" "$no_attach" ;;
+  kill) require_member "$member"; cmd_kill "$member" "$force" ;;
+  restart)
+    require_member "$member"
+    cmd_kill "$member" "$force"
+    for _ in $(seq 20); do process_alive "$member" || break; sleep 0.5; done
+    process_alive "$member" && die "$member's process is still exiting; try wake in a moment"
+    cmd_wake "$member" "$fresh" "$message" "$no_attach"
+    ;;
+  -h | --help | help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac
