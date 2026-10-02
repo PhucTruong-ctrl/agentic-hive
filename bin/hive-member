@@ -10,6 +10,8 @@
 #                                         kill and wake (and attach); refuses while
 #                                         the member is working unless --force
 #   hive-member kill <member> [--force]  end the member's tmux session
+#   hive-member delete <member> [--force]
+#                                         remove its session, claims, nest and telemetry
 #   hive-member send <member> <message> wake if needed and start work
 #
 # Harness, directory and conversation come from the member's launch record
@@ -26,20 +28,35 @@ if [[ $(id -un) != "$HIVE_USER" ]]; then
 fi
 unset TMUX
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
 
 tele() { jq -r "$2 // empty" "$HIVE_ROOT/telemetry/members/$1.json" 2>/dev/null || true; }
 launch() { jq -r "$2 // empty" "$HIVE_ROOT/members/$1/state/launch.json" 2>/dev/null || true; }
 
 has_session() { tmux has-session -t "=hive-$1" 2>/dev/null; }
 
-# Is the member's harness process alive (not just its tmux pane)?
+# Follow the pane's process tree. Hook telemetry can retain an old PID after
+# resume, so it must not decide whether wake/restart may replace a live agent.
 process_alive() {
-  local pid harness comm
-  pid=$(tele "$1" .pid); harness=$(tele "$1" .harness)
-  [[ $pid =~ ^[0-9]+$ && -d /proc/$pid ]] || return 1
-  comm=$(cat "/proc/$pid/comm" 2>/dev/null)
-  [[ $comm == "$harness"* || $comm == ".$harness"* || $comm == node* ]]
+  local harness pid comm args checked=0 queue=() children=()
+  harness=$(launch "$1" .harness); harness=${harness:-$(tele "$1" .harness)}
+  [[ -n $harness ]] || return 1
+  mapfile -t queue < <(tmux list-panes -t "=hive-$1" -F '#{pane_pid}' 2>/dev/null)
+  while ((${#queue[@]} && checked < 256)); do
+    pid=${queue[0]}; queue=("${queue[@]:1}")
+    [[ $pid =~ ^[0-9]+$ ]] || continue
+    checked=$((checked + 1))
+    comm=$(cat "/proc/$pid/comm" 2>/dev/null || true)
+    if [[ $comm == "$harness"* || $comm == ".$harness"* ]]; then return 0; fi
+    if [[ $comm == node* ]]; then
+      args=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+      [[ $args == *"/$harness"* ]] && return 0
+    fi
+    children=()
+    [[ -r /proc/$pid/task/$pid/children ]] && read -r -a children <"/proc/$pid/task/$pid/children" || true
+    queue+=("${children[@]}")
+  done
+  return 1
 }
 harness_alive() { has_session "$1" && process_alive "$1"; }
 
@@ -90,6 +107,26 @@ cmd_kill() {
     say "no tmux session for $m"
   fi
   mark_ended "$m"
+}
+
+cmd_delete() {
+  local m="$1" force="$2" d owner
+  [[ $m != beekeeper ]] || die "cannot delete the Beekeeper's Room identity"
+  if harness_alive "$m" && ((!force)); then
+    die "$m has a running agent; use --force to delete it"
+  fi
+  cmd_kill "$m" "$force"
+  exec 9>>"$HIVE_ROOT/.claims.lock"
+  flock 9
+  for d in "$HIVE_ROOT"/claims/*/; do
+    [[ -d $d ]] || continue
+    owner=$(cat "$d/owner" 2>/dev/null || true)
+    if [[ $owner == "$m" ]]; then rm -rf -- "$d"; fi
+  done
+  flock -u 9
+  rm -f -- "$HIVE_ROOT/telemetry/members/$m.json"
+  rm -rf -- "$HIVE_ROOT/members/$m"
+  say "deleted $m (Room history retained)"
 }
 
 send_prompt() {
@@ -173,6 +210,7 @@ case $verb in
   status | "") cmd_status "$member" ;;
   wake | send) require_member "$member"; cmd_wake "$member" "$fresh" "$message" "$no_attach" ;;
   kill) require_member "$member"; cmd_kill "$member" "$force" ;;
+  delete) require_member "$member"; cmd_delete "$member" "$force" ;;
   restart)
     require_member "$member"
     cmd_kill "$member" "$force"

@@ -82,6 +82,23 @@ class DashboardControls(unittest.TestCase):
             status, _ = self.request("/api/member", {"member": "alice", "action": "restart"})
         self.assertEqual(status, 200)
         run.assert_called_once_with("hive-member", "restart", "alice", "--force", "--no-attach")
+        with patch.object(web, "run_hive", return_value="ok") as run:
+            status, _ = self.request("/api/member", {"member": "alice", "action": "delete"})
+        self.assertEqual(status, 200)
+        run.assert_called_once_with("hive-member", "delete", "alice", "--force")
+
+    def test_live_pane_overrides_stale_telemetry_pid(self):
+        values = {"/proc/100/comm": "bash", "/proc/100/task/100/children": "101",
+                  "/proc/101/comm": ".codex-wrapped", "/proc/101/task/101/children": ""}
+        with patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
+            self.assertEqual(web.pane_harness_pid(100, "codex"), 101)
+        telemetry = self.root / "telemetry/members/alice.json"
+        telemetry.parent.mkdir(parents=True)
+        telemetry.write_text(json.dumps({"harness": "codex", "pid": 99999, "status": "idle"}))
+        with patch.object(web, "member_panes", return_value={"alice": 100}), \
+             patch.object(web, "pane_harness_pid", return_value=101):
+            alice = next(m for m in web.members(0, 0, []) if m["member"] == "alice")
+        self.assertEqual((alice["state"], alice["pid"]), ("idle", 101))
 
     def test_cross_origin_command_is_rejected(self):
         with patch.object(web, "run_hive") as run:

@@ -196,6 +196,7 @@
   .action-row button { font: inherit; font-size: 12px; cursor: pointer; padding: 5px 9px;
     background: var(--chip); border: 1px solid var(--line); color: var(--ink); border-radius: 6px; }
   .action-row button:hover, .top-action:hover { border-color: var(--accent); }
+  .action-row button.danger { color: var(--dead); }
   .action-row button:disabled { opacity: .45; cursor: wait; }
   .action-row .icon-button { width: 32px; height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
   .action-row .icon-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8;
@@ -451,6 +452,7 @@ function renderMembers(all) {
         ${live ? `<button class="icon-button" data-terminal="${esc(m.member)}" title="Open ${esc(m.member)} terminal" aria-label="Open ${esc(m.member)} terminal"><svg aria-hidden="true"><use href="#icon-terminal"/></svg></button>` : `<button data-action="wake" data-member="${esc(m.member)}" title="Wake ${esc(m.member)}">Wake</button>`}
         <button class="icon-button" data-copy="hive-attach ${esc(m.member)}" title="Copy attach command" aria-label="Copy attach command for ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-copy"/></svg></button>
         ${live ? `<button data-action="restart" data-member="${esc(m.member)}" title="Restart ${esc(m.member)}">Restart</button><button class="icon-button" data-action="kill" data-member="${esc(m.member)}" title="Kill ${esc(m.member)}" aria-label="Kill ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-stop"/></svg></button>` : ""}
+        <button class="danger" data-action="delete" data-member="${esc(m.member)}" title="Delete ${esc(m.member)}">Delete</button>
       </div>
     </div>`;
   }).join("") : `<div class="empty">No ${currentMemberTab} members.</div>`;
@@ -583,13 +585,23 @@ async function copyText(text) {
 
 async function sendMemberAction(button) {
   const {member, action} = button.dataset;
+  if (action === "delete" && !confirm(`Delete ${member}? This ends its session and permanently removes its private notes, artifacts, state, telemetry, and claims. Room history stays.`)) return;
   button.disabled = true;
   try {
     const res = await fetch("/api/member", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({member, action})});
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    const next = await fetch("/api/state", {cache: "no-store"});
-    if (next.ok) render(await next.json());
+    const attempts = action === "wake" || action === "restart" ? 8 : 1;
+    for (let i = 0; i < attempts; i++) {
+      if (i) await new Promise(resolve => setTimeout(resolve, 500));
+      const next = await fetch("/api/state", {cache: "no-store"});
+      if (!next.ok) continue;
+      const snapshot = await next.json();
+      render(snapshot);
+      const state = snapshot.members.find(m => m.member === member)?.state;
+      if (state === "working" || state === "idle") { showMemberTab(state); break; }
+      if (action === "kill") showMemberTab("inactive");
+    }
   } catch (err) {
     alert(`${action} ${member} failed: ${err.message}`);
   } finally { button.disabled = false; }

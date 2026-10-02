@@ -92,6 +92,7 @@ the non-root `hive` user; the Beekeeper keeps root authority.
 | `hive-member status` | List member session states. |
 | `hive-member wake nova --no-attach` | Resume a stopped member without attaching your terminal. |
 | `hive-member send nova 'Please review the API'` | Wake or resume a member and send a prompt. |
+| `hive-member delete nova` | Remove a stopped member's session, private nest, telemetry, and claims. Use `--force` for a running member. |
 | `hive observe` | Read a concise snapshot of the Room and shared state. |
 | `hive-dash` | Open the terminal dashboard. |
 

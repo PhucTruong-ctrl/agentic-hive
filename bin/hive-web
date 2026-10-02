@@ -302,11 +302,49 @@ def alive(pid, harness):
     if not isinstance(pid, int) or pid <= 1:
         return False
     comm = read(f"/proc/{pid}/comm")
-    return bool(comm) and (comm.startswith(harness) or comm.startswith("." + harness) or comm.startswith("node"))
+    if not harness:
+        return False
+    if comm.startswith(harness) or comm.startswith("." + harness):
+        return True
+    return comm.startswith("node") and f"/{harness}" in read(f"/proc/{pid}/cmdline")
+
+
+def member_panes():
+    """Map each member session to its pane PID; telemetry may retain an old PID."""
+    try:
+        result = subprocess.run(tmux_cmd("list-panes", "-a", "-F", "#{session_name}\t#{pane_pid}"),
+                                capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode:
+        return {}
+    panes = {}
+    for line in result.stdout.splitlines():
+        session, sep, pid = line.partition("\t")
+        if sep and pid.isdigit() and session.startswith("hive-"):
+            panes[session[5:]] = int(pid)
+    return panes
+
+
+def pane_harness_pid(pane_pid, harness):
+    """Find the agent underneath its tmux pane, including wrapped Nix binaries."""
+    pending = [pane_pid] if pane_pid else []
+    seen = set()
+    while pending and len(seen) < 256:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if alive(pid, harness):
+            return pid
+        pending.extend(int(child) for child in read(f"/proc/{pid}/task/{pid}/children").split()
+                       if child.isdigit())
+    return None
 
 
 def members(generation, now, room_entries):
     out = []
+    panes = member_panes()
     last_posts = {}
     for entry in reversed(room_entries):
         last_posts.setdefault(entry["member"], entry)
@@ -320,12 +358,17 @@ def members(generation, now, room_entries):
         except json.JSONDecodeError:
             t = {}
         last = iso_to_epoch(t.get("last_activity"))
-        harness = t.get("harness") or ""
-        if not t:
-            state = "never"
-        elif alive(t.get("pid"), harness):
+        try:
+            launch = json.loads(read(d / "state/launch.json", "{}") or "{}")
+        except json.JSONDecodeError:
+            launch = {}
+        harness = launch.get("harness") or t.get("harness") or ""
+        live_pid = pane_harness_pid(panes.get(name), harness)
+        if live_pid:
             recent = last is not None and now - last < WORKING_WINDOW
             state = "working" if t.get("status") == "working" and recent else "idle"
+        elif not t and name not in panes:
+            state = "never"
         else:
             state = "dead"
         cursor = read(d / "state/last-delivered-generation", "0")
@@ -335,7 +378,7 @@ def members(generation, now, room_entries):
             "member": name,
             "state": state,
             "harness": harness or None,
-            "pid": t.get("pid"),
+            "pid": live_pid or t.get("pid"),
             "started_at": t.get("started_at"),
             "last_activity": t.get("last_activity"),
             "cwd": cwd,
@@ -664,9 +707,10 @@ class Handler(BaseHTTPRequestHandler):
                         "wake": ("wake", member, "--no-attach"),
                         "restart": ("restart", member, "--force", "--no-attach"),
                         "kill": ("kill", member, "--force"),
+                        "delete": ("delete", member, "--force"),
                     }
                     if action not in commands:
-                        raise ValueError("action must be wake, restart or kill")
+                        raise ValueError("action must be wake, restart, kill or delete")
                     detail = run_hive("hive-member", *commands[action])
                     self._send(200, json.dumps({"ok": True, "detail": detail}), "application/json")
                     return
