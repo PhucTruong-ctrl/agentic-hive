@@ -143,7 +143,9 @@ in
         "network.target"
         "agentic-hive-init.service"
       ];
-      path = [ pkgs.git pkgs.tmux ];
+      # Web controls launch member harnesses and a host shell through this
+      # service. Their binaries must be in its PATH, not only the login profile.
+      path = [ cfg.package pkgs.bash pkgs.git pkgs.tmux ] ++ cfg.harnesses;
       environment = {
         HIVE_ROOT = cfg.root;
         # git refuses repos owned by another user unless marked safe.
