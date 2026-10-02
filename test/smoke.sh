@@ -26,6 +26,11 @@ check "say requires member" bash -c '! HIVE_MEMBER= hive say hi 2>/dev/null'
 # Session start with an empty room: header only.
 out=$(hook alice SessionStart)
 check "session start emits header" grep -q 'member: alice' <<<"$out"
+check "empty notes add no session hint" bash -c '! grep -q "working notes:" <<<"$1"' _ "$out"
+printf 'Preserve this contract across compaction.\n' >"$HIVE_ROOT/members/alice/notes/working.md"
+out=$(hook alice SessionStart)
+check "session start points to saved notes" grep -q "working notes: $HIVE_ROOT/members/alice/notes" <<<"$out"
+check "session start does not inject note contents" bash -c '! grep -q "Preserve this contract" <<<"$1"' _ "$out"
 
 # No change -> silence.
 out=$(hook alice PostToolUse)

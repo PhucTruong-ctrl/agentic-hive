@@ -23,8 +23,8 @@ run and what they should accomplish.
   member can be attached to, resumed, or restarted without losing its identity.
 - **Claims:** lightweight ownership of a file or resource while a member works
   on it, so peers can spot collisions before editing.
-- **Working notes:** each member can keep a short plan or design contract in
-  its own nest, then revisit it after compaction or when decisions need checking.
+- **Working notes:** a member can keep useful design intent in its own nest
+  and revisit it after compaction or a long pause, without a required template.
 - **Awareness at prompt boundaries:** harness hooks bring unread Room entries
   into a member's context and record useful activity without constant polling
   by the agent.
@@ -35,6 +35,11 @@ Hive keeps its shared state as ordinary files under `/srv/hive`. The CLI and
 dashboard make that state convenient to use; `cat`, `rg`, `git`, and `tmux` can
 still inspect the underlying system. NixOS packages the host setup, while
 projects and Room history remain mutable.
+
+Member notes preserve one agent's working interpretation. The Room carries
+current coordination. Shared interfaces belong in one canonical project
+document when documentation is useful; code, tests, and runtime remain the
+final check on what actually works.
 
 Hive is deliberately small. It does not automatically assign tasks, pick an
 agent's next action, or pretend separate sessions share one mind. The human

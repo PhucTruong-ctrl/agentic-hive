@@ -117,7 +117,7 @@ deliver() {
 }
 
 session_header() {
-  local claims mine=0 others=0 d owner lines=""
+  local claims mine=0 others=0 d owner lines="" notes_line=""
   for d in "$HIVE_ROOT"/claims/*/; do
     [[ -d $d ]] || continue
     owner=$(cat "$d/owner" 2>/dev/null || echo '?')
@@ -136,8 +136,11 @@ session_header() {
   else
     claims="$others claim(s) by peers, $mine by you (hive claims)."
   fi
-  printf 'HIVE\nmember: %s\nnest: %s\nworking notes: %s/notes (review when resuming or after compaction)\n%s\n' \
-    "$m" "$nest" "$nest" "$claims"
+  # Point to existing notes on resume; never inject their contents.
+  if [[ -d $nest/notes ]] && find "$nest/notes" -type f -print -quit 2>/dev/null | grep -q .; then
+    notes_line="working notes: $nest/notes (review after resume or compaction)"$'\n'
+  fi
+  printf 'HIVE\nmember: %s\nnest: %s\n%s%s\n' "$m" "$nest" "$notes_line" "$claims"
 }
 
 # Codex writes rate limits into its session log (token_count events). Copy the
@@ -191,7 +194,7 @@ quiet_nudge() {
     ((mins >= quiet)) || return 0
     since="in ${mins}m"
   fi
-  printf 'HIVE: no Room post from you %s. If this prompt starts new work or changes direction, post one line first: hive say "<what> — <where>".\n' "$since"
+  printf 'HIVE: no Room post from you %s. If this prompt starts shared work that may overlap a peer or changes shared direction, briefly announce what and where in the Room.\n' "$since"
 }
 
 case $event in
