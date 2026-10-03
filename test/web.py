@@ -5,10 +5,13 @@ import importlib.util
 import io
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -176,6 +179,37 @@ class DashboardControls(unittest.TestCase):
         mask = os.urandom(4)
         frame = bytes([0x81, 0x80 | len(payload)]) + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
         self.assertEqual(web.read_ws_frame(OneByteSocket(frame)), (1, payload))
+
+    def test_terminal_upgrade_uses_http_1_1(self):
+        # Firefox rejects an HTTP/1.0 upgrade even when its other headers are valid.
+        # Exercise the actual response on the wire without starting a shell.
+        with patch.object(web, "TerminalBridge") as bridge_class:
+            bridge_class.return_value.running = False
+            server = ThreadingHTTPServer(("127.0.0.1", 0), web.Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                host = f"127.0.0.1:{server.server_port}"
+                with socket.create_connection(server.server_address, timeout=2) as connection:
+                    connection.sendall((
+                        "GET /ws/shell HTTP/1.1\r\n"
+                        f"Host: {host}\r\nOrigin: http://{host}\r\n"
+                        "Connection: Upgrade\r\nUpgrade: websocket\r\n"
+                        "Sec-WebSocket-Version: 13\r\n"
+                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+                    ).encode())
+                    response = b""
+                    while b"\r\n\r\n" not in response:
+                        chunk = connection.recv(4096)
+                        self.assertTrue(chunk, "connection closed before upgrade headers")
+                        response += chunk
+                self.assertEqual(response.split(b"\r\n", 1)[0], b"HTTP/1.1 101 Switching Protocols")
+                self.assertIn(b"Upgrade: websocket\r\n", response)
+                self.assertIn(b"Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n", response)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
 
 
 if __name__ == "__main__":
