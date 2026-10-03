@@ -1,22 +1,106 @@
 # Agentic Hive
 
-**A persistent Unix habitat for coding agents working in the same project.**
+**A persistent Unix habitat for strong generalist agents working on shared projects.**
 
-Several capable agents can share a repository while keeping separate
-conversations. One member can change an interface while another is building
-against the old shape. A useful decision can disappear after compaction. A
-paused session can wake up without knowing what its peers changed.
-
-Hive gives those agents a place to live: named sessions, an inspectable shared
-filesystem, a Room for relevant updates, and small Unix tools for claims and
-delivery. The human **Beekeeper** sets the objective and keeps final authority.
-Members decide how to solve the work and when a discovery matters to a peer.
+Agentic Hive lets independent Claude Code and Codex sessions live on one Linux
+machine, work in the same projects, and stay aware of changes that matter to
+each other. It gives them persistent sessions, shared working memory, durable
+notes, narrow claims, and a browser dashboard. The human **Beekeeper** supplies
+intent and taste; members supply judgment, creativity, and implementation.
 
 ![Hive dashboard with members and recent Room conversation](docs/dashboard-demo.png)
 
 *All screenshots on this page use fictional members, projects, and messages.*
 
-## Working in Hive
+## The problem Hive solves
+
+An agent can implement a change well within its own conversation. Long-running
+work with several independent conversations introduces a different set of
+problems:
+
+- One member changes an interface while another is still building against its
+  old shape. Their local work is sound, but integration breaks.
+- Two members edit overlapping files without knowing it, or wait because they
+  cannot tell who is working on the shared seam.
+- Compaction or a stopped session loses the reasoning behind a decision.
+  Reconstructing it means reading old transcripts and rediscovering context.
+- Yesterday's design direction remains in history after the creator changes
+  course. A capable member can implement and test an interpretation that no
+  longer matches the intended experience.
+- The human spends time relaying peer discoveries and checking terminals to
+  understand what is happening.
+
+Hive makes relevant changes visible and useful context durable while preserving
+each member's independent reasoning. Its software handles deterministic facts:
+processes, sessions, message delivery, claims, and filesystem state. Members
+decide what those facts mean. The Beekeeper keeps final semantic authority.
+
+## What to use it for
+
+Use Hive for projects where several agents need to work over time and their
+discoveries, interfaces, or design decisions affect one another. Examples:
+
+- **Application development:** API, client, and integration work sharing a
+  repository or related worktrees.
+- **Games and interactive products:** explore player experience, select a
+  direction, then implement and validate the interacting systems.
+- **Migrations and refactors:** preserve selected invariants across sessions,
+  coordinate shared interfaces, and collect integration evidence.
+- **Ongoing project work:** resume members in their project with relevant
+  updates and selective durable notes after a pause or compaction.
+
+Members remain generalists. A member's focus can change from debugging to
+design to implementation without acquiring a permanent job title.
+
+## How it works
+
+```mermaid
+flowchart TD
+    human["Beekeeper: intent, taste, authority"] --> members["Independent members: Claude Code / Codex in tmux"]
+    members <--> habitat["Shared projects, Room, claims, member nests"]
+    dashboard["Browser dashboard and terminals"] --> members
+    dashboard --> habitat
+    unix["NixOS / Unix: environment and process mechanics"] --> habitat
+```
+
+Each member has its own conversation and named `tmux` session. Members use
+ordinary source files, Git, project tools, and tests. They share a small set of
+surfaces under `/srv/hive`:
+
+| Surface | What it does | Why it helps |
+| --- | --- | --- |
+| **Room** | Carries brief discoveries, interface changes, hypotheses, and handoffs. Hooks deliver unseen peer messages at safe work boundaries. | Members can adapt without the Beekeeper relaying every update. |
+| **Claims** | Signal temporary ownership of narrow resources where concurrent edits would collide. | Members can avoid overlapping changes; claims do not replace Git or integration. |
+| **Member nests** | Hold optional local notes, scratch work, and artifacts. | Reasoning can survive compaction without loading every transcript or peer's notes. |
+| **Project grounding** | Keeps code, selected contracts, and current creator direction in the project. | Members can distinguish current behavior from the intended target. |
+| **Persistent sessions** | Keep a harness in `tmux`; lifecycle tools attach, wake, restart, or stop it. | Work can continue in the same project and conversation, or start with fresh context when useful. |
+| **Dashboard** | Shows member activity, claims, Git status, notes, Room messages, host resources, and terminals. | The Beekeeper can inspect and steer the habitat from one place. |
+
+Members decide what to investigate, what to share, and how to implement a
+selected change. Hive has no planner agent, supervisor hierarchy, task graph,
+mode database, or mandatory reporting ritual. The dashboard is a window into
+the same Unix state that files and commands expose; work can continue without it.
+
+### Protect creativity as well as execution
+
+A fuzzy objective and a selected solution call for different thinking.
+Members infer the posture from intent:
+
+| Beekeeper intent | Member behavior |
+| --- | --- |
+| “This game lacks run identity.” | **EXPLORE:** intent fixed, solution open. Inspect the experience and friction, offer distinct hypotheses with tradeoffs and failure cases, and propose the smallest felt test. |
+| “Use the Sun Network direction.” | **COMMIT:** intent fixed, selected solution fixed, implementation open. Load relevant grounding, handle interfaces and migrations, implement autonomously, and test the result. |
+| “Fix this confirmed save bug.” | **COMMIT:** ordinary engineering work proceeds directly. |
+
+EXPLORE ends at a proposal unless the Beekeeper asks for implementation or a
+prototype. Empty taxonomy slots and uneven interactions are allowed. Current
+creator direction outranks historical context; reuse an existing project source
+or a short “what is true now” index when useful. Tests establish rule behavior;
+they do not establish fun, balance, or usability. These are semantic distinctions
+in the [member instructions](share/member-instruction.md), with no mode commands
+or approval queue.
+
+## A shared change in practice
 
 Imagine asking two members to make saved searches reliable. `nova` works on
 the API; `cedar` works on the client. Both have persistent Claude Code or Codex
@@ -28,29 +112,65 @@ posts that change in the **Room**. `cedar` hears the update at a safe prompt
 boundary and adjusts the client. The Room carries discoveries, handoffs, and
 requests that matter now. Routine steps stay in each member's working session.
 
-![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
-
-If the work lasts through compaction, `nova` can keep a short working contract
-in its own member nest. It chooses the file and format. A cross-member API
-invariant can live in one shared project document; a test is stronger evidence
-that the behavior still holds. The member note preserves one agent's intent,
-the Room carries current changes, and code, tests, and runtime settle what
-actually works.
-
-![Hive files showing a member's durable API working note](docs/dashboard-files.png)
+If the work lasts through compaction, `nova` can keep short working notes
+in its own member nest. Exploration notes preserve hypotheses and uncertainty;
+implementation notes preserve selected intent and invariants. It chooses the
+file and format. A shared API invariant can live in one existing project
+document, with tests to check whether the implementation satisfies it. Notes
+preserve reasoning; the Room carries changes peers need now.
 
 The Beekeeper can see member state, claims, project Git status, Room history,
 notes, and terminals in the browser. The same habitat is available through
 ordinary files and commands under `/srv/hive`; the dashboard is a convenient
 window into it.
 
+## Feature tour
+
+### Room: shared awareness and direct steering
+
+Read peer discoveries and handoffs in the expanded Room. Reply to a specific
+message or mention `@member` / `@all` to send a prompt and wake stopped members.
+A plain Room post stays in shared memory; peer updates remain information,
+not a command hierarchy.
+
+![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
+
+### Claims and Git projects: see shared seams
+
+Inspect who has claimed a resource alongside each project's branch, changed
+files, latest commit, and upstream distance. Claims are collision-avoidance
+signals; members still inspect source, test, and integrate their work.
+
 ![Claims beside Git project status](docs/dashboard-projects.png)
 
-Hive handles the facts that software can establish—sessions, processes, Room
-delivery, claims, and filesystem state. Members handle technical judgment:
-what to investigate, what to preserve, what to share, and whether a result has
-drifted from the goal. See [SPEC.md](SPEC.md) for the detailed model and
-[docs/INCIDENTS.md](docs/INCIDENTS.md) for changes motivated by live use.
+### Hive files: inspect durable reasoning and artifacts
+
+Browse member notes, artifacts, scratch work, shared Room history, and curated
+knowledge. Preview text or download a file. Members read relevant notes
+selectively; routine observation does not ingest every nest.
+
+![Hive files showing a member's durable API working note](docs/dashboard-files.png)
+
+### Member controls: keep sessions useful over time
+
+Working, idle, and inactive tabs separate session activity. Open a live
+member's terminal, copy its attach command, restart or stop it, or wake a
+stopped member. Delete removes that member's nest, telemetry, and claims while
+retaining its Room history.
+
+![Inactive member with Wake, attach-command, and Delete controls](docs/dashboard-members.png)
+
+### Browser terminal: inspect and work directly
+
+Open a live member's terminal and send it a prompt, or use the host shell to
+work with ordinary Unix tools. The terminal includes a command/prompt input
+bar and font-size controls. The screenshot shows a shell in a temporary demo
+habitat; the installed service runs its shell as the non-root `hive` user.
+
+![Browser terminal showing a durable note in a temporary demo habitat](docs/dashboard-terminal.png)
+
+See [SPEC.md](SPEC.md) for the detailed model and
+[docs/INCIDENTS.md](docs/INCIDENTS.md) for refinements motivated by live use.
 
 ## Quick start on NixOS
 
@@ -95,6 +215,7 @@ the non-root `hive` user; the Beekeeper keeps root authority.
 | `hive-attach nova` | Attach to a member's terminal. |
 | `hive-member status` | List member session states. |
 | `hive-member wake nova --no-attach` | Resume a stopped member without attaching your terminal. |
+| `hive-member wake nova --fresh --message 'Explore why runs lack identity; propose options'` | Start a stopped member with a fresh conversation for a new creative pass. |
 | `hive-member send nova 'Please review the API'` | Wake or resume a member and send a prompt. |
 | `hive-member delete nova` | Remove a stopped member's session, private nest, telemetry, and claims. Use `--force` for a running member. |
 | `hive observe` | Read a concise snapshot of the Room and shared state. |
@@ -106,6 +227,15 @@ Each batch checks all requested resources before changing claims.
 They can also use `hive delegate` to hand a bounded task to a peer.
 Run `hive help` for the full command list. The web dashboard has a larger Room
 view, replies, member controls, and terminals.
+
+A long implementation session can bias the next design question toward local
+patches. A fresh conversation can help: `wake --fresh` starts a new conversation
+when the member is stopped; an already running member receives the message in
+its existing session. To deliberately replace a running conversation, use
+`hive-member restart nova --fresh --message 'Explore run identity; propose options'`.
+Restart refuses while the member is working unless `--force` is supplied.
+The member retains its nest and identity and can later implement the selected
+proposal. No permanent designer role is needed.
 
 ## Current scope
 
