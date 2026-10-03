@@ -10,7 +10,9 @@ intent and taste; members supply judgment, creativity, and implementation.
 
 ![Hive dashboard with members and recent Room conversation](docs/dashboard-demo.png)
 
-*All screenshots on this page use fictional members, projects, and messages.*
+*Screenshots use a demo project. The session-control and harness-terminal
+captures show a real Codex member in a temporary Hive habitat; the other
+dashboard examples use fictional member data and messages.*
 
 ## The problem Hive solves
 
@@ -151,21 +153,50 @@ selectively; routine observation does not ingest every nest.
 
 ![Hive files showing a member's durable API working note](docs/dashboard-files.png)
 
-### Member controls: keep sessions useful over time
+### Each member has its own session control panel
 
-Working, idle, and inactive tabs separate session activity. Open a live
-member's terminal, copy its attach command, restart or stop it, or wake a
-stopped member. Delete removes that member's nest, telemetry, and claims while
-retaining its Room history.
+Each member card shows its harness, activity, project/worktree, branch, unread
+Room updates, and latest Room message. Working, idle, and inactive tabs help
+you find the session you want to inspect or steer. The controls act on that
+individual member:
+
+| Control | Action |
+| --- | --- |
+| **Terminal icon** | Attach the member's running Codex or Claude Code terminal inside the WebUI. |
+| **Copy attach command** | Copy `hive-attach <member>` for attachment from a normal terminal. |
+| **Restart** | Restart the member's harness and resume its conversation. |
+| **Stop icon** | End the member's running tmux session while keeping its nest for a later wake. |
+| **Wake** | Bring a stopped member back in its project, resuming its last conversation when available. |
+| **Delete** | Remove its session, nest, telemetry, and claims; retain its Room history. |
+
+The following capture shows the controls for a real Codex member reviewing a
+small demonstration project:
+
+![Session control panel for a real Codex member, including terminal, attach, restart, stop, and delete controls](docs/dashboard-session-controls.png)
+
+Stopped members expose **Wake** in place of the live-session controls:
 
 ![Inactive member with Wake, attach-command, and Delete controls](docs/dashboard-members.png)
 
-### Browser terminal: inspect and work directly
+### Attach the member's harness terminal inside the WebUI
 
-Open a live member's terminal and send it a prompt, or use the host shell to
-work with ordinary Unix tools. The terminal includes a command/prompt input
-bar and font-size controls. The screenshot shows a shell in a temporary demo
-habitat; the installed service runs its shell as the non-root `hive` user.
+Click the terminal icon on a live member's card to open its existing `tmux`
+session in the browser. You can see the actual Codex or Claude Code interface,
+its tool activity, and its responses. Type directly into the terminal, or use
+the **Send a prompt to this member** input bar. Font-size and fit controls help
+on smaller screens. Closing the browser terminal leaves the member running.
+
+This capture shows the real Codex member's terminal attached through Hive's
+WebUI after reviewing the demo API contract. The input bar contains an unsent
+follow-up prompt:
+
+![Real Codex harness attached inside Hive's WebUI, with its response and per-member prompt input](docs/dashboard-harness-terminal.png)
+
+### Host shell: work with ordinary Unix tools
+
+The **Host shell** button opens a shell on the Hive machine for ordinary Unix
+commands. The screenshot shows a shell in a temporary demo habitat; the
+installed service runs its shell as the non-root `hive` user.
 
 ![Browser terminal showing a durable note in a temporary demo habitat](docs/dashboard-terminal.png)
 
