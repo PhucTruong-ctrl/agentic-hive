@@ -185,6 +185,11 @@ class TerminalBridge:
         self.master_fd, slave_fd = pty.openpty()
         set_winsize(self.master_fd, 30, 90)
 
+        def terminal_session():
+            os.setsid()
+            # Resize and keyboard signals must reach the foreground terminal process.
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+
         cmd = self.command
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
@@ -199,7 +204,7 @@ class TerminalBridge:
                 close_fds=True,
                 env=env,
                 cwd=self.cwd,
-                preexec_fn=os.setsid,
+                preexec_fn=terminal_session,
             )
         except Exception as e:
             print(f"hive-web: failed to spawn {cmd}: {e}", flush=True)

@@ -211,6 +211,50 @@ class DashboardControls(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
+    def test_terminal_foreground_process_receives_resize(self):
+        server_socket, client_socket = socket.socketpair()
+        client_socket.settimeout(2)
+        script = """
+import os
+import signal
+
+def resized(*_):
+    print('size=' + str(os.get_terminal_size(0).columns), flush=True)
+
+signal.signal(signal.SIGWINCH, resized)
+try:
+    foreground = os.tcgetpgrp(0) == os.getpgrp()
+except OSError:
+    foreground = False
+print('foreground=' + str(foreground), flush=True)
+print('ready', flush=True)
+while True:
+    signal.pause()
+"""
+        bridge = web.TerminalBridge([sys.executable, "-u", "-c", script], "steer", server_socket,
+                                    cwd=str(self.root))
+
+        def receive_until(marker):
+            data = b""
+            while marker not in data:
+                chunk = client_socket.recv(4096)
+                self.assertTrue(chunk, "terminal closed before expected output")
+                data += chunk
+            return data
+
+        try:
+            bridge.start()
+            self.assertIn(b"foreground=True", receive_until(b"ready"))
+            web.set_winsize(bridge.master_fd, 25, 132)
+            self.assertIn(b"size=132", receive_until(b"size=132"))
+        finally:
+            bridge.stop()
+            server_socket.shutdown(socket.SHUT_RDWR)
+            server_socket.close()
+            client_socket.close()
+            if bridge.proc:
+                bridge.proc.wait(timeout=2)
+
 
 if __name__ == "__main__":
     unittest.main()
