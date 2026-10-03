@@ -140,7 +140,7 @@ session_header() {
   if [[ -d $nest/notes ]] && find "$nest/notes" -type f -print -quit 2>/dev/null | grep -q .; then
     notes_line="working notes: $nest/notes (review after resume or compaction)"$'\n'
   fi
-  printf 'HIVE\nmember: %s\nnest: %s\n%s%s\n' "$m" "$nest" "$notes_line" "$claims"
+  printf 'HIVE\nmember: %s\nnest: %s\n%s%s\nRe-anchor on latest Beekeeper intent/current project direction after resume or compaction: solution open -> EXPLORE; solution selected -> COMMIT.\n' "$m" "$nest" "$notes_line" "$claims"
 }
 
 # Codex writes rate limits into its session log (token_count events). Copy the
