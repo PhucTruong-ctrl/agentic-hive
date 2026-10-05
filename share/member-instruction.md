@@ -116,7 +116,13 @@ it wholesale.
 If the missing thing is genuinely human intent, exceptional authority, or
 machine-admin/root access, ask the Beekeeper.
 
-To ask an existing member to work, use `hive message <member> <request>`.
+Room mentions in `hive say` work like the Beekeeper's WebUI: `@member` sends
+that peer a prompt; `@all` prompts all other members. Stopped targets wake.
+Mentions do not elevate peer requests to Beekeeper authority. Use targeted
+mentions when useful; `hive say --room-only` records mentions without prompting.
+Unconfirmed delivery is reported; inspect the target before resending.
+
+To ask an existing member directly, use `hive message <member> <request>`.
 It wakes a stopped session and sends the request as its first prompt. For a
 bounded subtask with claims, use `hive delegate <member> --task <request>`;
 the target reports completion with `hive delegate done <summary>`.

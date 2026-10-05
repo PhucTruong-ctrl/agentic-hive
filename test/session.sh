@@ -7,6 +7,7 @@ trap 'rm -rf "$tmp"' EXIT
 export HIVE_ROOT="$tmp/hive" HIVE_USER="$(id -un)" HIVE_TEST_LOG="$tmp/log"
 export HIVE_TEST_AGENT_PID=$$
 export HIVE_MEMBER=bob
+export HIVE_TEST_HOOK="$repo/bin/hive-hook"
 mkdir -p "$HIVE_ROOT/members/bob/state" "$HIVE_ROOT/telemetry/members" "$HIVE_ROOT/projects" "$tmp/bin" "$tmp/share"
 printf '%s\n' '{"harness":"codex","dir":"'"$HIVE_ROOT/projects"'"}' >"$HIVE_ROOT/members/bob/state/launch.json"
 printf '%s\n' '{"session_id":"test-session","harness":"codex"}' >"$HIVE_ROOT/telemetry/members/bob.json"
@@ -15,10 +16,30 @@ cat >"$tmp/bin/tmux" <<'EOF'
 if [[ $1 == has-session ]]; then [[ ${HIVE_TEST_LIVE:-0} == 1 ]]; exit; fi
 if [[ $1 == list-panes ]]; then [[ ${HIVE_TEST_LIVE:-0} == 1 ]] && printf '%s\n' "$HIVE_TEST_AGENT_PID"; exit; fi
 printf 'tmux %s\n' "$*" >>"$HIVE_TEST_LOG"
+case $1 in
+  load-buffer) cat >"$HIVE_ROOT/pending-prompt"; echo 0 >"$HIVE_ROOT/enters" ;;
+  display-message) echo 1 ;;
+  capture-pane)
+    printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"
+    if [[ ${HIVE_TEST_DIALOG:-0} == 1 && -f $HIVE_ROOT/pending-prompt ]]; then echo 'Permission required'
+    else printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"; fi
+    ;;
+  send-keys)
+    n=$(cat "$HIVE_ROOT/enters"); n=$((n + 1)); echo "$n" >"$HIVE_ROOT/enters"
+    if [[ ${HIVE_TEST_NO_ACK:-0} != 1 && $n -gt ${HIVE_TEST_DROP_ENTER:-0} ]]; then
+      jq -n --rawfile prompt "$HIVE_ROOT/pending-prompt" '{prompt: $prompt}' |
+        "$HIVE_TEST_HOOK" codex UserPromptSubmit >/dev/null
+      printf '%s\n' "$(cat "$HIVE_ROOT/pending-prompt")" >>"$HIVE_ROOT/accepted-prompts"
+    fi
+    ;;
+esac
 EOF
 cat >"$tmp/bin/hive-launch" <<'EOF'
 #!/usr/bin/env bash
 printf 'launch %s\n' "$*" >>"$HIVE_TEST_LOG"
+if [[ ${HIVE_TEST_NO_ACK:-0} != 1 ]]; then
+  jq -n --arg prompt "${@: -1}" '{prompt: $prompt}' | "$HIVE_TEST_HOOK" codex UserPromptSubmit >/dev/null
+fi
 EOF
 cat >"$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
@@ -26,21 +47,60 @@ printf 'sleep %s\n' "$*" >>"$HIVE_TEST_LOG"
 EOF
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$repo/bin:$PATH"
+"$repo/bin/hive" init >/dev/null
 "$repo/bin/hive-member" send bob 'do the next task' >/dev/null
 rg -q '^launch bob codex .* -- resume test-session do the next task$' "$HIVE_TEST_LOG"
 printf 'cold wake delivered initial prompt\n'
+if HIVE_TEST_NO_ACK=1 "$repo/bin/hive-member" send bob 'a cold wake without acknowledgement' >"$tmp/out" 2>"$tmp/error"; then
+  echo 'unconfirmed cold wake unexpectedly succeeded' >&2; exit 1
+fi
+rg -q 'not confirmed' "$tmp/error"
+printf 'unconfirmed cold wake reported\n'
 
 : >"$HIVE_TEST_LOG"
 printf '%s\n' '{"harness":"bash","dir":"/tmp"}' >"$HIVE_ROOT/members/bob/state/launch.json"
 printf '%s\n' '{"pid":99999,"harness":"bash","status":"idle"}' >"$HIVE_ROOT/telemetry/members/bob.json"
 HIVE_TEST_LIVE=1 "$repo/bin/hive-member" send bob 'do live task' >/dev/null
 rg -q '^tmux load-buffer -b hive-send-[0-9]+-[0-9]+ -$' "$HIVE_TEST_LOG"
-rg -q '^tmux paste-buffer -d -p -b hive-send-[0-9]+-[0-9]+ -t =hive-bob:0.0$' "$HIVE_TEST_LOG"
+rg -q '^tmux paste-buffer -d -p -r -b hive-send-[0-9]+-[0-9]+ -t =hive-bob:0.0$' "$HIVE_TEST_LOG"
 rg -q '^tmux send-keys .* Enter$' "$HIVE_TEST_LOG"
-mapfile -t send_events <"$HIVE_TEST_LOG"
-[[ ${#send_events[@]} == 4 && ${send_events[0]} == tmux\ load-buffer* &&
-   ${send_events[1]} == tmux\ paste-buffer* && ${send_events[2]} == 'sleep 1' && ${send_events[3]} == *' Enter' ]]
-printf 'live member prompted\n'
+[[ $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 1 ]]
+printf 'live member submission confirmed by hook\n'
+
+: >"$HIVE_TEST_LOG"
+HIVE_TEST_LIVE=1 HIVE_TEST_DROP_ENTER=1 "$repo/bin/hive-member" send bob 'retry the swallowed Enter' >/dev/null
+[[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 2 ]]
+printf 'swallowed Enter retried without duplicate paste\n'
+
+: >"$HIVE_TEST_LOG"
+rm -f "$HIVE_ROOT/pending-prompt"
+if HIVE_TEST_LIVE=1 HIVE_TEST_NO_ACK=1 HIVE_TEST_DIALOG=1 "$repo/bin/hive-member" send bob 'retry the swallowed Enter' >"$tmp/out" 2>"$tmp/error"; then
+  echo 'unconfirmed submission unexpectedly succeeded' >&2; exit 1
+fi
+if rg -q '^tmux send-keys' "$HIVE_TEST_LOG"; then echo 'confirmed a dialog after paste' >&2; exit 1; fi
+rg -q 'not confirmed' "$tmp/error"
+printf 'stale receipt rejected; dialog not confirmed by transcript text\n'
+
+: >"$HIVE_TEST_LOG"
+if HIVE_TEST_LIVE=1 HIVE_TEST_DIALOG=1 "$repo/bin/hive-member" send bob 'do not type into the startup dialog' >"$tmp/out" 2>"$tmp/error"; then
+  echo 'startup dialog unexpectedly accepted delivery' >&2; exit 1
+fi
+if rg -q '^tmux (load-buffer|send-keys)' "$HIVE_TEST_LOG"; then echo 'typed into a startup dialog' >&2; exit 1; fi
+rg -q 'no ready prompt composer' "$tmp/error"
+printf 'startup dialog receives no paste or Enter\n'
+rm -f "$HIVE_ROOT/pending-prompt"
+
+: >"$HIVE_TEST_LOG"
+: >"$HIVE_ROOT/accepted-prompts"
+HIVE_TEST_LIVE=1 "$repo/bin/hive-member" send bob 'first concurrent request' >"$tmp/first" &
+first=$!
+HIVE_TEST_LIVE=1 "$repo/bin/hive-member" send bob 'second concurrent request' >"$tmp/second" &
+second=$!
+wait "$first"; wait "$second"
+[[ $(wc -l <"$HIVE_ROOT/accepted-prompts") == 2 ]]
+rg -qx 'first concurrent request' "$HIVE_ROOT/accepted-prompts"
+rg -qx 'second concurrent request' "$HIVE_ROOT/accepted-prompts"
+printf 'concurrent prompts independently submitted\n'
 
 cat >"$tmp/bin/claude" <<'EOF'
 #!/usr/bin/env bash

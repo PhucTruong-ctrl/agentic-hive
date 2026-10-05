@@ -129,19 +129,71 @@ cmd_delete() {
   say "deleted $m (Room history retained)"
 }
 
-send_prompt() {
-  local m="$1" message="$2" buffer="hive-send-$$-$RANDOM"
-  harness_alive "$m" || die "$m has no running agent to receive the message"
-  printf '%s' "$message" | tmux load-buffer -b "$buffer" - || die "could not load message for $m"
-  tmux paste-buffer -d -p -b "$buffer" -t "=hive-$m:0.0" || die "could not paste message to $m"
-  # Let the agent finish handling the bracketed paste before submitting.
-  sleep 1
-  tmux send-keys -t "=hive-$m:0.0" Enter || die "could not submit message to $m"
-  say "sent message to $m"
+composer() {
+  local row line rows=()
+  row=$(tmux display-message -p -t "=hive-$1:0.0" '#{cursor_y}') || return 1
+  [[ $row =~ ^[0-9]+$ ]] || return 1
+  mapfile -t rows < <(tmux capture-pane -p -t "=hive-$1:0.0")
+  # Walk wrapped input up from the cursor, never search old transcript prompts.
+  for ((; row >= 0; row--)); do
+    line=${rows[row]:-}
+    case $line in
+      '› '* | '❯ '*) printf '%s' "${line#* }"; return 0 ;;
+      '  '*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 1
 }
 
-cmd_wake() {
-  local m="$1" fresh="$2" message="${3:-}" no_attach="${4:-0}" harness dir sid args=()
+confirm_prompt() {
+  local m="$1" message="$2" before="$3" retry="${4:-0}" before_draft="${5:-}" receipt hash draft attempt
+  local receipt_file="$HIVE_ROOT/members/$1/state/last-submitted-prompt"
+  hash=$(printf '%s' "$message" | jq -Rrjs 'gsub("^\\s+|\\s+$"; "")' | sha256sum | cut -d' ' -f1)
+  for attempt in $(seq 21); do
+    sleep 0.5
+    receipt=$(cat "$receipt_file" 2>/dev/null || true)
+    if [[ $receipt != "$before" && ${receipt#* } == "$hash" ]]; then
+      say "sent message to $m (submission confirmed)"
+      return 0
+    fi
+    # Submit/retry Enter only while our text remains in the composer. Never
+    # repaste or send blind keystrokes into a dialog or an accepted turn.
+    if ((retry && attempt % 2 == 0)); then
+      draft=$(composer "$m" || true)
+      if [[ -n $draft && ${draft:0:32} == "${message:0:32}" ]] ||
+         [[ $draft != "$before_draft" && ( $draft == '[Pasted Content '* || $draft == '[Pasted text '* ) ]]; then
+        tmux send-keys -t "=hive-$m:0.0" Enter || die "could not submit message to $m"
+      fi
+    fi
+  done
+  die "submission to $m was not confirmed; inspect its terminal before resending"
+}
+
+send_prompt() {
+  local m="$1" message="$2" buffer="hive-send-$$-$RANDOM" before before_draft ready=0
+  harness_alive "$m" || die "$m has no running agent to receive the message"
+  before=$(cat "$HIVE_ROOT/members/$m/state/last-submitted-prompt" 2>/dev/null || true)
+  # A process can be alive while its TUI is still booting or showing a dialog.
+  for _ in $(seq 40); do
+    if before_draft=$(composer "$m"); then ready=1; break; fi
+    sleep 0.25
+  done
+  ((ready)) || die "$m has no ready prompt composer; inspect its terminal"
+  printf '%s' "$message" | tmux load-buffer -b "$buffer" - || die "could not load message for $m"
+  tmux paste-buffer -d -p -r -b "$buffer" -t "=hive-$m:0.0" || die "could not paste message to $m"
+  # Let the agent finish handling the bracketed paste before submitting.
+  sleep 1
+  confirm_prompt "$m" "$message" "$before" 1 "$before_draft"
+}
+
+cmd_wake() (
+  local m="$1" fresh="$2" message="${3:-}" no_attach="${4:-0}" harness dir sid before args=()
+  # Serialize the entire wake/paste/submit exchange, including cold starts.
+  if [[ -n $message ]]; then
+    exec 7>>"$HIVE_ROOT/members/$m/state/.prompt.lock"
+    flock -w 30 7 || die "another prompt to $m is still being delivered"
+  fi
   # A newly launched harness may not have fired SessionStart yet. Do not
   # mistake that short gap for a dead pane and kill it before it gets a prompt.
   if has_session "$m" && [[ -n $message ]] && ! harness_alive "$m"; then
@@ -153,6 +205,7 @@ cmd_wake() {
   if harness_alive "$m"; then
     say "$m is already running ($(state "$m"))"
     [[ -z $message ]] || send_prompt "$m" "$message"
+    exec 7>&-
     ((no_attach)) || attach "$m"
     return 0
   fi
@@ -174,9 +227,12 @@ cmd_wake() {
     say "waking $m ($harness in $dir) with a fresh conversation"
   fi
   [[ -z $message ]] || args+=("$message")
-  HIVE_LAUNCH_NO_ATTACH=1 hive-launch "$m" "$harness" "$dir" -- "${args[@]}"
+  before=$(cat "$HIVE_ROOT/members/$m/state/last-submitted-prompt" 2>/dev/null || true)
+  HIVE_LAUNCH_NO_ATTACH=1 hive-launch "$m" "$harness" "$dir" -- "${args[@]}" 7>&-
+  [[ -z $message ]] || confirm_prompt "$m" "$message" "$before"
+  exec 7>&-
   ((no_attach)) || attach "$m"
-}
+)
 
 # Attach when run from a terminal; otherwise just say how.
 attach() {

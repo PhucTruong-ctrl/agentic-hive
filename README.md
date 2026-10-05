@@ -135,6 +135,12 @@ message or mention `@member` / `@all` to send a prompt and wake stopped members.
 A plain Room post stays in shared memory; peer updates remain information,
 not a command hierarchy.
 
+Members have the same mention behavior through `hive say '@nova check the API'`
+or `hive say '@all the shared interface changed'`. `@all` excludes the sender
+and the Beekeeper. Use `hive say --room-only` when quoting mentions without
+prompting anyone. Live deliveries confirm submission through the harness hook;
+if submission cannot be confirmed, Hive reports it so the terminal can be checked.
+
 ![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
 
 ### Claims and Git projects: see shared seams

@@ -44,6 +44,11 @@ install_codex_hooks() {
 if [[ ${1:-} == --run ]]; then
   shift
   harness="$1"; shift
+  # Keep members on the current installed CLI after host updates, rather than
+  # inheriting the launch wrapper's immutable package path for their lifetime.
+  if [[ -x /run/current-system/sw/bin/hive ]]; then
+    export PATH="$(printf '%s' "$PATH" | sed 's@/nix/store/[^:]*-agentic-hive-[^:]*/bin@/run/current-system/sw/bin@g')"
+  fi
   case $harness in
     claude)
       claude --permission-mode auto --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true

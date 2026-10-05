@@ -14,7 +14,6 @@ Runs as the unprivileged hive user. Telemetry is a hint; process state wins.
 import argparse
 import base64
 import binascii
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import fcntl
 import hashlib
 import json
@@ -543,15 +542,6 @@ def run_hive(binary, *args, input_text=None, member=None, timeout=45):
     return result.stdout.strip()
 
 
-def room_targets(body):
-    names = {p.name for p in (HIVE_ROOT / "members").iterdir() if p.is_dir() and p.name != WEB_MEMBER}
-    mentions = {m.rstrip(".,;:") for m in re.findall(r"@([a-z0-9][a-z0-9._-]{0,63})", body)}
-    unknown = mentions - names - {"all"}
-    if unknown:
-        raise ValueError("unknown member: " + ", ".join(sorted(unknown)))
-    return sorted(names if "all" in mentions else mentions)
-
-
 def browser_path(path):
     """Resolve only the shared Room/files and member nest folders."""
     parts = path.split("/") if path else []
@@ -723,23 +713,9 @@ class Handler(BaseHTTPRequestHandler):
                     body = req.get("message", "")
                     if not isinstance(body, str) or not body.strip() or len(body) > 12000:
                         raise ValueError("message must be 1–12000 characters")
-                    targets = room_targets(body)
                     run_hive("hive", "join", WEB_MEMBER)
-                    run_hive("hive", "say", "-", input_text=body, member=WEB_MEMBER)
-                    failed = {}
-                    if targets:
-                        prompt = re.sub(r"\s+", " ", body).strip()
-                        with ThreadPoolExecutor(max_workers=4) as pool:
-                            jobs = {pool.submit(run_hive, "hive-member", "send", target,
-                                                f"Message from Beekeeper in the Room: {prompt}"): target
-                                    for target in targets}
-                            for job in as_completed(jobs):
-                                try:
-                                    job.result()
-                                except Exception as exc:
-                                    failed[jobs[job]] = str(exc)
-                    self._send(200, json.dumps({"ok": True, "sent": sorted(set(targets) - failed.keys()),
-                                                 "failed": failed}), "application/json")
+                    report = json.loads(run_hive("hive", "say", "--json", "-", input_text=body, member=WEB_MEMBER))
+                    self._send(200, json.dumps(report), "application/json")
                     return
                 member = req.get("member", "")
                 prompt = req.get("prompt", "")

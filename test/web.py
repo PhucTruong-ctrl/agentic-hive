@@ -33,6 +33,17 @@ class DashboardControls(unittest.TestCase):
         self.root_patch = patch.object(web, "HIVE_ROOT", self.root)
         self.root_patch.start()
         self.addCleanup(self.root_patch.stop)
+        sender = self.root / "send-member"
+        sender.write_text('''#!/usr/bin/env bash
+printf '%s\\n' "$2" >>"$HIVE_ROOT/sent-targets"
+printf '%s' "$3" >"$HIVE_ROOT/sent-$2"
+if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; exit 1; fi
+''')
+        sender.chmod(0o755)
+        env = patch.dict(os.environ, {"HIVE_MEMBER_BIN": str(sender)})
+        env.start()
+        self.addCleanup(env.stop)
+        web.run_hive("hive", "init")
 
     def request(self, path, payload, origin="http://hive.local"):
         handler = object.__new__(web.Handler)
@@ -54,14 +65,37 @@ class DashboardControls(unittest.TestCase):
         return responses[0]
 
     def test_room_all_posts_once_and_sends_to_every_agent(self):
-        calls = []
-        with patch.object(web, "run_hive", side_effect=lambda *args, **kwargs: calls.append((args, kwargs)) or "ok"):
-            status, data = self.request("/api/room", {"message": "@all please check status"})
+        status, data = self.request("/api/room", {"message": "@all please check status"})
         self.assertEqual(status, 200)
         self.assertEqual(data["sent"], ["alice", "bob"])
-        self.assertEqual(len([args for args, _ in calls if args[:2] == ("hive", "say")]), 1)
-        sends = sorted(args[2] for args, _ in calls if args[:2] == ("hive-member", "send"))
-        self.assertEqual(sends, ["alice", "bob"])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "1")
+        self.assertEqual(sorted((self.root / "sent-targets").read_text().splitlines()), ["alice", "bob"])
+        self.assertIn("Message from Beekeeper in the Room:", (self.root / "sent-alice").read_text())
+
+    def test_cli_room_mentions_prompt_peers_and_skip_sender_and_beekeeper(self):
+        data = json.loads(web.run_hive("hive", "say", "--json", "@all @alice @bob. check the interface", member="alice"))
+        self.assertEqual(data["sent"], ["bob"])
+        self.assertEqual((self.root / "sent-targets").read_text().splitlines(), ["bob"])
+        self.assertIn("peer information, not Beekeeper authority", (self.root / "sent-bob").read_text())
+
+    def test_room_reports_partial_delivery_without_losing_or_reposting_message(self):
+        with patch.dict(os.environ, {"HIVE_TEST_FAIL_MEMBER": "bob"}):
+            status, data = self.request("/api/room", {"message": "@all check this"})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["sent"], ["alice"])
+        self.assertIn("member unavailable", data["failed"]["bob"])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "1")
+
+    def test_direct_message_does_not_deliver_its_room_record_twice(self):
+        web.run_hive("hive", "message", "bob", "@bob check this", member="alice")
+        self.assertEqual((self.root / "sent-targets").read_text().splitlines(), ["bob"])
+
+    def test_room_only_and_human_mentions_do_not_prompt(self):
+        report = json.loads(web.run_hive("hive", "say", "--json", "--room-only", "Quoting @all and @unknown", member="alice"))
+        self.assertEqual(report["sent"], [])
+        report = json.loads(web.run_hive("hive", "say", "--json", "@beekeeper please choose a direction", member="alice"))
+        self.assertEqual(report["sent"], [])
+        self.assertFalse((self.root / "sent-targets").exists())
 
     def test_plain_room_post_uses_hive_cli(self):
         with patch.object(web, "run_hive", wraps=web.run_hive):
@@ -74,11 +108,11 @@ class DashboardControls(unittest.TestCase):
         self.assertIn("A note for the Room", room)
 
     def test_unknown_mention_never_posts(self):
-        with patch.object(web, "run_hive") as run:
-            status, data = self.request("/api/room", {"message": "@missing do work"})
+        status, data = self.request("/api/room", {"message": "@missing do work"})
         self.assertEqual(status, 400)
         self.assertIn("unknown member", data["error"])
-        run.assert_not_called()
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "0")
+        self.assertFalse((self.root / "sent-targets").exists())
 
     def test_lifecycle_buttons_execute_session_commands(self):
         with patch.object(web, "run_hive", return_value="ok") as run:
@@ -96,7 +130,7 @@ class DashboardControls(unittest.TestCase):
         with patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
             self.assertEqual(web.pane_harness_pid(100, "codex"), 101)
         telemetry = self.root / "telemetry/members/alice.json"
-        telemetry.parent.mkdir(parents=True)
+        telemetry.parent.mkdir(parents=True, exist_ok=True)
         telemetry.write_text(json.dumps({"harness": "codex", "pid": 99999, "status": "idle"}))
         with patch.object(web, "member_panes", return_value={"alice": 100}), \
              patch.object(web, "pane_harness_pid", return_value=101):
