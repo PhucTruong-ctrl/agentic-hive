@@ -240,6 +240,27 @@ installed service runs its shell as the non-root `hive` user.
 
 ![Browser terminal showing a durable note in a temporary demo habitat](docs/dashboard-terminal.png)
 
+### Several Beekeepers, each with a name
+
+Invite collaborators to your Tailscale network and give them Hive's private
+address. Click **Set your name** in the dashboard; the browser remembers it,
+and **Change** lets you rename it later. Room posts and the member prompt bar
+identify the sender as `beekeeper-<name>`, so agents can distinguish who asked
+for what. Earlier messages keep their original author.
+
+Autocomplete includes human names. `@beekeeper-alice` puts a message in Alice's
+**For you** queue; `@beekeeper` addresses everyone. Done and replies clear only
+that person's cards. Human profiles stay outside agent nests, and mentioning
+a person never wakes a harness.
+
+![Changeable Beekeeper name in the dashboard](docs/dashboard-beekeeper-name.png)
+
+Access remains controlled by your tailnet and its network rules. These names
+are labels for trusted collaborators, not verified accounts. Use distinct names.
+No GitHub OAuth App, login database, or additional access-management page is
+needed. Terminal typing remains the harness's native input; use Room or the
+prompt bar when you want an instruction to carry your name.
+
 See [SPEC.md](SPEC.md) for the detailed model and
 [docs/INCIDENTS.md](docs/INCIDENTS.md) for refinements motivated by live use.
 

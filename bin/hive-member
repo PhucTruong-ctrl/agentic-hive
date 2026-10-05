@@ -77,6 +77,7 @@ state() {
 require_member() {
   [[ -n ${1:-} ]] || { usage >&2; exit 2; }
   [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || die "invalid member name: $1"
+  [[ $1 != beekeeper && ! -f $HIVE_ROOT/beekeepers/$1/state/beekeeper.json ]] || die "$1 is a human Beekeeper identity, not an agent session"
   [[ -d $HIVE_ROOT/members/$1 ]] || die "unknown member '$1' (members: $(ls "$HIVE_ROOT/members" | tr '\n' ' '))"
 }
 
@@ -90,6 +91,7 @@ mark_ended() {
 cmd_status() {
   local m
   for m in $(ls "$HIVE_ROOT/members"); do
+    [[ $m != beekeeper ]] || continue
     [[ -z ${1:-} || $m == "$1" ]] || continue
     printf '%-24s %-24s %-7s %s\n' "$m" "$(state "$m")" "$(tele "$m" .harness || true)" "$(tele "$m" .session_id)"
   done

@@ -46,20 +46,23 @@ if [[ $2 == ${HIVE_TEST_UNCONFIRMED_MEMBER:-} ]]; then echo 'submission unconfir
         self.addCleanup(env.stop)
         web.run_hive("hive", "init")
 
-    def request(self, path, payload, origin="http://hive.local"):
+    def request(self, path, payload, origin="http://hive.local", cookie=None):
         handler = object.__new__(web.Handler)
         body = json.dumps(payload).encode()
         handler.path = path
         handler.headers = {"Content-Length": str(len(body)), "Origin": origin, "Host": "hive.local"}
+        if cookie:
+            handler.headers["Cookie"] = cookie
         handler.rfile = io.BytesIO(body)
         responses = []
-        handler._send = lambda status, data, _: responses.append((status, json.loads(data)))
+        handler._send = lambda status, data, _, *headers: responses.append((status, json.loads(data)))
         handler.do_POST()
         return responses[0]
 
-    def get_json(self, path):
+    def get_json(self, path, cookie=None):
         handler = object.__new__(web.Handler)
         handler.path = path
+        handler.headers = {"Cookie": cookie} if cookie else {}
         handler._send = lambda status, data, _: responses.append((status, json.loads(data)))
         responses = []
         handler.do_GET()
@@ -178,6 +181,67 @@ if [[ $2 == ${HIVE_TEST_UNCONFIRMED_MEMBER:-} ]]; then echo 'submission unconfir
             status, _ = self.request("/api/steer", {"member": "alice", "prompt": "do work"})
         self.assertEqual(status, 200)
         run.assert_called_once_with("hive-member", "send", "alice", "do work")
+
+    def test_named_beekeeper_posts_and_prompts_keep_the_requester(self):
+        self.assertEqual(self.request("/api/identity", {"name": " TCTinh "})[0], 200)
+        status, data = self.request("/api/room", {"message": "@all review source", "member": "someone-else"}, cookie="hive_beekeeper=tctinh")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["sent"], ["alice", "bob"])
+        self.assertIn("member=beekeeper-tctinh", (self.root / "ROOM.md").read_text())
+        self.assertIn("Message from Beekeeper beekeeper-tctinh in the Room", (self.root / "sent-alice").read_text())
+        self.assertFalse((self.root / "members/beekeeper-tctinh").exists())
+        with patch.object(web, "run_hive", return_value="ok") as run:
+            self.assertEqual(self.request("/api/steer", {"member": "alice", "prompt": "check the API"}, cookie="hive_beekeeper=tctinh")[0], 200)
+        self.assertIn("Beekeeper beekeeper-tctinh via dashboard", run.call_args.args[-1])
+        self.assertTrue(run.call_args.args[-1].endswith("check the API"))
+
+    def test_name_selection_rejects_bad_handles_and_cross_origin_requests(self):
+        for name in ("../escape", "a/b", "a\r\nInjected: yes", "", "a"*40, None):
+            self.assertEqual(self.request("/api/identity", {"name": name})[0], 400)
+        self.assertEqual(self.request("/api/identity", {"name": "eve"}, "https://other.site")[0], 403)
+        (self.root / "members/beekeeper-conflict").mkdir()
+        self.assertEqual(self.request("/api/identity", {"name": "conflict"})[0], 400)
+        self.assertEqual(web.browser_beekeeper({"Cookie": "hive_beekeeper=unknown"})["member"], "beekeeper")
+
+    def test_cookie_remembers_browser_name_and_rename_keeps_old_room_authors(self):
+        handler = object.__new__(web.Handler)
+        payload = json.dumps({"name": "mina"}).encode()
+        handler.path = "/api/identity"
+        handler.headers = {"Content-Length": str(len(payload)), "Origin": "https://hive.local", "Host": "hive.local"}
+        handler.rfile = io.BytesIO(payload)
+        responses = []
+        handler._send = lambda *args: responses.append(args)
+        handler.do_POST()
+        self.assertEqual(responses[0][0], 200)
+        cookie = dict(responses[0][3])["Set-Cookie"]
+        for flag in ("hive_beekeeper=mina", "HttpOnly", "SameSite=Lax", "Path=/", "Secure"):
+            self.assertIn(flag, cookie)
+        self.request("/api/room", {"message": "My original request"}, cookie="hive_beekeeper=mina")
+        self.request("/api/identity", {"name": "new-name"})
+        self.request("/api/room", {"message": "My next request"}, cookie="hive_beekeeper=new-name")
+        posts = web.room()
+        self.assertEqual([post["member"] for post in posts], ["beekeeper-mina", "beekeeper-new-name"])
+        self.assertEqual(self.get_json("/api/state", cookie="hive_beekeeper=new-name")[1]["viewer"]["name"], "new-name")
+
+    def test_named_human_mentions_and_done_are_personal(self):
+        for name in ("mina", "lee"):
+            self.request("/api/identity", {"name": name})
+        web.run_hive("hive", "say", "@beekeeper Shared question?", member="alice")
+        web.run_hive("hive", "say", "@beekeeper-mina Personal question?", member="alice")
+        web.run_hive("hive", "say", "@beekeeper-lee Another question?", member="alice")
+        self.assertFalse((self.root / "sent-targets").exists())
+        def mentions(name):
+            return [post["gen"] for post in self.get_json("/api/state", cookie=f"hive_beekeeper={name}")[1]["beekeeper_mentions"]]
+        self.assertEqual(mentions("mina"), [1, 2])
+        self.assertEqual(mentions("lee"), [1, 3])
+        self.assertEqual(self.request("/api/room-done", {"generation": 1}, cookie="hive_beekeeper=mina")[0], 200)
+        self.assertEqual(mentions("mina"), [2])
+        self.assertEqual(mentions("lee"), [1, 3])
+        self.assertEqual(self.request("/api/room-done", {"generation": 3}, cookie="hive_beekeeper=mina")[0], 400)
+        self.request("/api/room", {"message": "> Reply to alice · Room #2: Personal question?\n\n@alice Use B"}, cookie="hive_beekeeper=mina")
+        self.assertEqual(mentions("mina"), [])
+        self.assertEqual(mentions("lee"), [1, 3])
+        self.assertNotIn("beekeeper-mina", [member["member"] for member in web.members(4, 0, web.room())])
 
     def test_git_projects_include_projects_without_live_members(self):
         repo = self.root / "projects" / "sample"
@@ -393,12 +457,13 @@ try:
 except OSError:
     foreground = False
 print('foreground=' + str(foreground), flush=True)
+print('identity=' + os.environ.get('HIVE_MEMBER', ''), flush=True)
 print('ready', flush=True)
 while True:
     signal.pause()
 """
         bridge = web.TerminalBridge([sys.executable, "-u", "-c", script], "steer", server_socket,
-                                    cwd=str(self.root))
+                                    cwd=str(self.root), actor="beekeeper-mina")
 
         def receive_until(marker):
             data = b""
@@ -410,7 +475,9 @@ while True:
 
         try:
             bridge.start()
-            self.assertIn(b"foreground=True", receive_until(b"ready"))
+            output = receive_until(b"ready")
+            self.assertIn(b"foreground=True", output)
+            self.assertIn(b"identity=beekeeper-mina", output)
             web.set_winsize(bridge.master_fd, 25, 132)
             self.assertIn(b"size=132", receive_until(b"size=132"))
         finally:

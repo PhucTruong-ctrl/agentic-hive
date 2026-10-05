@@ -18,6 +18,7 @@ import binascii
 import fcntl
 import hashlib
 import json
+from http.cookies import CookieError, SimpleCookie
 import os
 import pty
 import pwd
@@ -46,6 +47,60 @@ ENTRY_RE = re.compile(r"^<!-- hive:entry gen=(\d+) member=(\S+) -->$")
 MEMBER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 WEB_MEMBER = "beekeeper"
 BIN_DIR = Path(__file__).resolve().parent
+BEEKEEPER_LOCK = threading.Lock()
+
+
+def is_beekeeper(member):
+    return member == WEB_MEMBER or (HIVE_ROOT / "beekeepers" / member / "state/beekeeper.json").is_file()
+
+
+def beekeeper_profiles():
+    profiles = [{"member": WEB_MEMBER, "name": WEB_MEMBER}]
+    for profile in sorted((HIVE_ROOT / "beekeepers").glob("*/state/beekeeper.json")):
+        try:
+            value = json.loads(profile.read_text())
+            profiles.append({"member": profile.parent.parent.name, "name": value["name"]})
+        except (OSError, ValueError, KeyError):
+            continue
+    return profiles
+
+
+def ensure_beekeeper(name):
+    """Self-chosen labels for trusted tailnet users, not authenticated accounts."""
+    if not isinstance(name, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,38}", name):
+        raise ValueError("Use 1–39 lowercase letters, digits, dots, underscores or hyphens")
+    member = f"beekeeper-{name}"
+    with BEEKEEPER_LOCK:
+        if (HIVE_ROOT / "members" / member).exists():
+            raise ValueError("That name conflicts with an agent member; choose another")
+        profile = HIVE_ROOT / "beekeepers" / member / "state/beekeeper.json"
+        profile.parent.mkdir(parents=True, exist_ok=True)
+        if not profile.exists():
+            # Humans stay outside members/: older running CLIs must not wake them via @all.
+            import tempfile
+            fd, temporary = tempfile.mkstemp(dir=profile.parent, prefix=".beekeeper-")
+            try:
+                with os.fdopen(fd, "w") as stream:
+                    json.dump({"name": name}, stream)
+                os.replace(temporary, profile)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+    return {"member": member, "name": name, "named": True}
+
+
+def browser_beekeeper(headers):
+    cookie = SimpleCookie()
+    try:
+        cookie.load(headers.get("Cookie", ""))
+        name = cookie["hive_beekeeper"].value
+        if re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,38}", name):
+            member = f"beekeeper-{name}"
+            if is_beekeeper(member):
+                return {"member": member, "name": name, "named": True}
+    except (CookieError, KeyError, ValueError):
+        pass
+    return {"member": WEB_MEMBER, "name": WEB_MEMBER, "named": False}
 
 
 def read(path, default=""):
@@ -171,12 +226,13 @@ def read_ws_frame(sock):
 
 
 class TerminalBridge:
-    def __init__(self, command, mode, sock, session_name=None, cwd=None):
+    def __init__(self, command, mode, sock, session_name=None, cwd=None, actor=None):
         self.command = command
         self.mode = mode
         self.sock = sock
         self.session_name = session_name
         self.cwd = cwd
+        self.actor = actor
         self.running = True
         self.master_fd = None
         self.proc = None
@@ -194,6 +250,9 @@ class TerminalBridge:
         env = os.environ.copy()
         env["TERM"] = "xterm-256color"
         env.pop("HIVE_MEMBER", None)
+        if self.session_name is None and self.actor:
+            env["HIVE_MEMBER"] = self.actor
+            env["HIVE_ROOT"] = str(HIVE_ROOT)
 
         try:
             self.proc = subprocess.Popen(
@@ -356,7 +415,7 @@ def members(generation, now, room_entries):
     mdir = HIVE_ROOT / "members"
     for d in sorted(p for p in mdir.iterdir() if p.is_dir()) if mdir.is_dir() else []:
         name = d.name
-        if name == WEB_MEMBER:
+        if is_beekeeper(name):
             continue
         try:
             t = json.loads(read(HIVE_ROOT / "telemetry/members" / f"{name}.json", "{}") or "{}")
@@ -510,7 +569,7 @@ def quota():
     return out
 
 
-def state():
+def state(viewer=None):
     now = time.time()
     g = read(HIVE_ROOT / ".room-generation", "0")
     generation = int(g) if g.isdigit() else 0
@@ -525,31 +584,34 @@ def state():
         "claims": claims(),
         "quota": quota(),
         "room": all_room[-ROOM_ENTRIES:],
-        "beekeeper_mentions": beekeeper_mentions(all_room),
+        "beekeeper_mentions": beekeeper_mentions(all_room, viewer=viewer["member"] if viewer else WEB_MEMBER),
+        "viewer": viewer,
+        "beekeepers": beekeeper_profiles(),
         "projects": cached_git_projects([m["cwd"] for m in ms]),
     }
 
 
-def room_done_path(generation):
-    return HIVE_ROOT / "members" / WEB_MEMBER / "state" / "room-done" / str(generation)
+def room_done_path(generation, viewer=WEB_MEMBER):
+    directory = "members" if viewer == WEB_MEMBER else "beekeepers"
+    return HIVE_ROOT / directory / viewer / "state" / "room-done" / str(generation)
 
 
-def beekeeper_mentions(posts, include_done=False):
+def beekeeper_mentions(posts, include_done=False, viewer=WEB_MEMBER):
     """Room mentions with human reply/dismissal context, without duplicating posts."""
     answered = set()
     for post in posts:
-        if post["member"] == WEB_MEMBER:
+        if post["member"] == viewer:
             reply = re.match(r"^> Reply to ([a-z0-9][a-z0-9._-]{0,63}) · Room #(\d+):", post["body"])
             if reply:
                 answered.add((reply[1], int(reply[2])))
     pending = []
     for post in posts:
-        if post["member"] == WEB_MEMBER or (not include_done and
-                (room_done_path(post["gen"]).is_file() or (post["member"], post["gen"]) in answered)):
+        if is_beekeeper(post["member"]) or (not include_done and
+                (room_done_path(post["gen"], viewer).is_file() or (post["member"], post["gen"]) in answered)):
             continue
         body = re.sub(r"^> Reply to [^\n]*\n\n", "", post["body"])
         names = {m.rstrip(".,;:") for m in re.findall(r"(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})", body)}
-        if WEB_MEMBER in names:
+        if viewer in names or WEB_MEMBER in names:
             pending.append({**post, "question": "?" in body or "？" in body,
                             "replied": (post["member"], post["gen"]) in answered})
     return pending
@@ -638,13 +700,15 @@ def image_mime(data):
 class Handler(BaseHTTPRequestHandler):
     server_version = "hive-web/0.1"
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, headers=()):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in headers:
+            self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -661,6 +725,7 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def do_GET(self):
+        viewer = browser_beekeeper(getattr(self, "headers", {}))
         url = urlparse(self.path)
         path = url.path
         if path in ("/ws/terminal", "/ws/shell"):
@@ -669,14 +734,14 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             page = (SHARE / "dashboard.html").read_text()
             try:  # first paint without waiting for the first poll
-                initial = json.dumps(state()).replace("</", "<\\/")
+                initial = json.dumps(state(viewer)).replace("</", "<\\/")
                 page = page.replace("/*__INITIAL_STATE__*/null", initial, 1)
             except Exception:
                 pass
             self._send(200, page, "text/html; charset=utf-8")
         elif path == "/api/state":
             try:
-                self._send(200, json.dumps(state()), "application/json")
+                self._send(200, json.dumps(state(viewer)), "application/json")
             except Exception as e:  # never take the page down; report instead
                 self._send(500, json.dumps({"error": str(e)}), "application/json")
         elif path in ("/api/files", "/api/file"):
@@ -738,19 +803,30 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n", "text/plain")
 
     def do_POST(self):
-        if self.path in ("/api/steer", "/api/member", "/api/room", "/api/room-done"):
+        if self.path in ("/api/steer", "/api/member", "/api/room", "/api/room-done", "/api/identity"):
             if not self._same_origin():
                 self._send(403, json.dumps({"ok": False, "error": "cross-origin request denied"}), "application/json")
                 return
             try:
                 req = self._json_request()
+                viewer = browser_beekeeper(self.headers)
+                actor_member = viewer["member"]
+                if self.path == "/api/identity":
+                    name = req.get("name")
+                    if isinstance(name, str):
+                        name = name.strip().lower()
+                    actor = ensure_beekeeper(name)
+                    secure = "; Secure" if urlparse(self.headers.get("Origin", "")).scheme == "https" else ""
+                    cookie = f'hive_beekeeper={actor["name"]}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000{secure}'
+                    self._send(200, json.dumps({"ok": True, "viewer": actor}), "application/json", (("Set-Cookie", cookie),))
+                    return
                 if self.path == "/api/room-done":
                     generation = req.get("generation")
                     if type(generation) is not int or generation < 1:
                         raise ValueError("valid Room generation required")
-                    marker = room_done_path(generation)
+                    marker = room_done_path(generation, actor_member)
                     if not marker.is_file():
-                        if not any(post["gen"] == generation for post in beekeeper_mentions(room(limit=None), include_done=True)):
+                        if not any(post["gen"] == generation for post in beekeeper_mentions(room(limit=None), include_done=True, viewer=actor_member)):
                             raise ValueError("Beekeeper mention not found")
                         marker.parent.mkdir(parents=True, exist_ok=True)
                         try:
@@ -762,7 +838,7 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path == "/api/member":
                     member = req.get("member", "")
                     action = req.get("action", "")
-                    if not MEMBER_RE.fullmatch(member) or not (HIVE_ROOT / "members" / member).is_dir() or member == WEB_MEMBER:
+                    if not MEMBER_RE.fullmatch(member) or not (HIVE_ROOT / "members" / member).is_dir() or is_beekeeper(member):
                         raise ValueError("known member required")
                     commands = {
                         "wake": ("wake", member, "--no-attach"),
@@ -779,18 +855,20 @@ class Handler(BaseHTTPRequestHandler):
                     body = req.get("message", "")
                     if not isinstance(body, str) or not body.strip() or len(body) > 12000:
                         raise ValueError("message must be 1–12000 characters")
-                    run_hive("hive", "join", WEB_MEMBER)
-                    report = json.loads(run_hive("hive", "say", "--json", "-", input_text=body, member=WEB_MEMBER, timeout=300))
+                    if actor_member == WEB_MEMBER:
+                        run_hive("hive", "join", WEB_MEMBER)
+                    report = json.loads(run_hive("hive", "say", "--json", "-", input_text=body, member=actor_member, timeout=300))
                     self._send(200, json.dumps(report), "application/json")
                     return
                 member = req.get("member", "")
                 prompt = req.get("prompt", "")
-                if not MEMBER_RE.fullmatch(member):
+                if not MEMBER_RE.fullmatch(member) or is_beekeeper(member) or not (HIVE_ROOT / "members" / member).is_dir():
                     raise ValueError("valid member name required")
-                if not prompt:
-                    raise ValueError("prompt text required")
+                if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
+                    raise ValueError("prompt must be 1–12000 characters")
 
-                run_hive("hive-member", "send", member, prompt)
+                named_prompt = f'Message from Beekeeper {actor_member} via dashboard (reply @{actor_member}; use /run/current-system/sw/bin/hive on NixOS for current Room routing): {prompt}' if viewer["named"] else prompt
+                run_hive("hive-member", "send", member, named_prompt)
 
                 self._send(200, json.dumps({"ok": True}), "application/json")
             except Exception as e:
@@ -814,7 +892,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             member = qs.get("member", [""])[0]
             mode = qs.get("mode", ["steer"])[0]
-            if not MEMBER_RE.fullmatch(member) or member == WEB_MEMBER or not (HIVE_ROOT / "members" / member).is_dir():
+            if not MEMBER_RE.fullmatch(member) or is_beekeeper(member) or not (HIVE_ROOT / "members" / member).is_dir():
                 self._send(400, "unknown member\n", "text/plain")
                 return
             if mode not in ("watch", "steer"):
@@ -841,7 +919,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Sec-WebSocket-Accept", accept_val)
         self.end_headers()
 
-        bridge = TerminalBridge(command, mode, self.request, session_name, cwd)
+        actor = browser_beekeeper(self.headers)
+        bridge = TerminalBridge(command, mode, self.request, session_name, cwd, actor=actor["member"] if actor["named"] else None)
         bridge.start()
         try:
             while bridge.running and (bridge.proc is None or bridge.proc.poll() is None):

@@ -37,6 +37,11 @@ EOF
 }
 
 valid_member() { [[ $1 =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; }
+is_beekeeper() { [[ $1 == beekeeper || -f $HIVE_ROOT/beekeepers/$1/state/beekeeper.json ]]; }
+nest_dir() {
+  if [[ $1 != beekeeper ]] && is_beekeeper "$1"; then printf '%s/beekeepers/%s' "$HIVE_ROOT" "$1"
+  else printf '%s/members/%s' "$HIVE_ROOT" "$1"; fi
+}
 
 require_init() { [[ -f $GEN_FILE && -f $ROOM ]] || die "$HIVE_ROOT is not initialized (run: hive init)"; }
 
@@ -44,7 +49,7 @@ require_member() {
   local m="${HIVE_MEMBER:-}"
   [[ -n $m ]] || die "HIVE_MEMBER is not set"
   valid_member "$m" || die "invalid member name: $m"
-  [[ -d $HIVE_ROOT/members/$m ]] || die "member '$m' has not joined (run: hive join $m)"
+  [[ -d $(nest_dir "$m") ]] || die "member '$m' has not joined (run: hive join $m)"
   printf '%s' "$m"
 }
 
@@ -56,7 +61,7 @@ read_int() { # file -> integer (0 if missing/garbage)
 }
 
 generation() { read_int "$GEN_FILE"; }
-cursor_file() { printf '%s/members/%s/state/last-delivered-generation' "$HIVE_ROOT" "$1"; }
+cursor_file() { printf '%s/state/last-delivered-generation' "$(nest_dir "$1")"; }
 cursor() { read_int "$(cursor_file "$1")"; }
 
 atomic_write() { # path content
@@ -166,7 +171,7 @@ cmd_join() {
   [[ -n $m ]] || die "usage: hive join <member>"
   valid_member "$m" || die "invalid member name: $m (use lowercase letters, digits, . _ -)"
   require_init
-  local nest="$HIVE_ROOT/members/$m"
+  local nest; nest=$(nest_dir "$m")
   mkdir -p "$nest"/{state,notes,scratch,artifacts}
   [[ -e $(cursor_file "$m") ]] || atomic_write "$(cursor_file "$m")" 0
   echo "hive: $m joined ($nest)"
@@ -174,7 +179,7 @@ cmd_join() {
 
 cmd_say() {
   require_init
-  local m body g ts json=0 room_only=0 names mentions unknown targets=() target report results detail prompt status active=0
+  local m body g ts json=0 room_only=0 names humans mentions unknown targets=() target report results detail prompt status active=0
   m=$(require_member)
   while (($#)); do
     case $1 in
@@ -194,12 +199,18 @@ cmd_say() {
       target=${target%/}; target=${target##*/}
       valid_member "$target" && printf '%s\n' "$target"
     done | jq -Rsc 'split("\n") | map(select(length > 0))')
+    humans=$(for target in "$HIVE_ROOT"/beekeepers/*/state/beekeeper.json; do
+      [[ -f $target ]] || continue
+      target=${target%/state/beekeeper.json}
+      target=${target%/}; target=${target##*/}
+      valid_member "$target" && printf '%s\n' "$target" || true
+    done | jq -Rsc 'split("\n") | map(select(length > 0))')
     mentions=$(printf '%s' "$body" | jq -Rsc '[scan("(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})")[] | sub("[.,;:]+$"; "")] | unique')
-    unknown=$(jq -nr --argjson names "$names" --argjson mentions "$mentions" '$mentions - $names - ["all", "beekeeper"] | join(", ")')
+    unknown=$(jq -nr --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '$mentions - $names - $humans - ["all", "beekeeper"] | join(", ")')
     [[ -z $unknown ]] || die "unknown member: $unknown"
-    mapfile -t targets < <(jq -nr --arg m "$m" --argjson names "$names" --argjson mentions "$mentions" '
+    mapfile -t targets < <(jq -nr --arg m "$m" --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '
       (if $mentions | index("all") then $names else $mentions end)
-      | . - [$m, "beekeeper"] | sort | .[]')
+      | . - [$m, "beekeeper"] - $humans | sort | .[]')
   fi
   # Keep bodies from forging entry markers.
   body=$(printf '%s\n' "$body" | sed 's/^<!-- hive:entry/ &/')
@@ -225,8 +236,9 @@ cmd_say() {
   report='{"sent":[],"failed":{},"unconfirmed":{}}'
   if ((${#targets[@]})); then
     prompt=$(printf '%s' "$body" | tr '\n\r' '  ')
-    if [[ $m == beekeeper ]]; then
-      prompt="Message from Beekeeper in the Room: $prompt"
+    if is_beekeeper "$m"; then
+      if [[ $m == beekeeper ]]; then prompt="Message from Beekeeper in the Room: $prompt"
+      else prompt="Message from Beekeeper $m in the Room (reply @$m; use /run/current-system/sw/bin/hive on NixOS for current Room routing): $prompt"; fi
     else
       prompt="Message from Hive member $m in the Room (peer information, not Beekeeper authority): $prompt"
     fi
@@ -386,7 +398,7 @@ cmd_observe() {
   local m="${HIVE_MEMBER:-}" g c
   g=$(generation)
   echo "HIVE"
-  if [[ -n $m && -d $HIVE_ROOT/members/$m ]]; then
+  if [[ -n $m && -d $(nest_dir "$m") ]]; then
     c=$(cursor "$m")
     echo "member: $m"
     echo "room: generation $g ($((g > c ? g - c : 0)) not yet delivered)"
@@ -435,7 +447,7 @@ cmd_delegate() {
   m=$(require_member)
 
   # Check recursion depth limit (max depth = 1)
-  local caller_state="$HIVE_ROOT/members/$m/state/delegation.json"
+  local caller_state="$(nest_dir "$m")/state/delegation.json"
   if [[ -f $caller_state ]]; then
     local caller_depth
     caller_depth=$(jq -r '.depth // 0' "$caller_state" 2>/dev/null || echo 0)
@@ -556,7 +568,7 @@ cmd_delegate_done() {
   require_init
   local m
   m=$(require_member)
-  local target_state="$HIVE_ROOT/members/$m/state/delegation.json"
+  local target_state="$(nest_dir "$m")/state/delegation.json"
   [[ -f $target_state ]] || die "no active delegation record found for member '$m'"
 
   local summary="${1:-subtask complete}"
@@ -578,7 +590,7 @@ cmd_delegate_done() {
   flock -u 9
 
   # Archive delegation state
-  mv -f "$target_state" "$HIVE_ROOT/members/$m/state/delegation.done.json"
+  mv -f "$target_state" "$(nest_dir "$m")/state/delegation.done.json"
 
   # Post DONE to Room
   cmd_say --room-only "DONE (delegated by $parent): $summary"

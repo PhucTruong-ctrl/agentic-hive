@@ -242,6 +242,12 @@
   .reply-draft button { flex: 0 0 auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: 16px system-ui; }
   .feedback { color: var(--muted); font-size: 12px; min-height: 18px; }
   .feedback.error { color: var(--dead); }
+  #identity-dialog { width: min(360px, calc(100vw - 48px)); box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--bg); color: var(--ink); }
+  #identity-dialog::backdrop { background: #0005; }
+  #identity-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  #identity-dialog p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  #identity-dialog label { display: block; font-size: 13px; margin: 14px 0 6px; }
+  #identity-name { box-sizing: border-box; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
   .quota-stat { grid-column: span 2; }
   .quota-lines { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 7px 12px; margin-top: 4px; }
   .quota-window { min-width: 0; font-size: 12px; }
@@ -270,6 +276,7 @@
     <button class="top-action" onclick="openTerminal(null)">Host shell</button>
     <button class="top-action" id="attention-link" onclick="showAttention()" hidden>For you</button>
     <button class="top-action" id="mention-alerts" onclick="enableMentionAlerts()">Enable mention alerts</button>
+    <button class="top-action" id="identity-button" onclick="openIdentity()">Set your name</button>
     <span id="attention-status" class="feedback" role="status"></span>
   </header>
 
@@ -333,6 +340,18 @@
   </div>
   <footer>Hive dashboard · refreshes every 3 seconds</footer>
 </div>
+
+<dialog id="identity-dialog" aria-labelledby="identity-title">
+  <form id="identity-form">
+    <h2 id="identity-title">Your Beekeeper name</h2>
+    <p>Choose a distinct name so members know who is speaking. This browser remembers it. Your tailnet controls access to Hive.</p>
+    <label for="identity-name">Name</label>
+    <input id="identity-name" autocomplete="nickname" maxlength="39" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,38}" placeholder="e.g. tctinh" required>
+    <p>Room posts and prompts use <b>@beekeeper-yourname</b>. Changing your name keeps earlier messages under their original author.</p>
+    <div class="feedback" id="identity-feedback" role="status"></div>
+    <div class="action-row"><button id="identity-save" type="submit">Save name</button><button type="button" onclick="$('identity-dialog').close()">Cancel</button></div>
+  </form>
+</dialog>
 
 <div id="term-modal" class="term-modal" style="display:none">
   <div class="term-backdrop" onclick="closeTerminal()"></div>
@@ -431,6 +450,32 @@ function showTab(tab) {
   }
   if (tab === "files" && !filesLoaded) openFolder("projects");
 }
+
+function myBeekeeper() { return dashboardData?.viewer?.member || "beekeeper"; }
+function humanNames() { return new Map((dashboardData?.beekeepers || [{member:"beekeeper",name:"beekeeper"}]).map(person=>[person.member,person.name])); }
+
+function openIdentity() {
+  $('identity-name').value=dashboardData?.viewer?.named ? dashboardData.viewer.name : '';
+  $('identity-feedback').textContent='';
+  $('identity-dialog').showModal();
+  $('identity-name').focus();
+}
+
+$('identity-form').addEventListener('submit', async event=>{
+  event.preventDefault();
+  const button=$('identity-save'),feedback=$('identity-feedback');button.disabled=true;
+  try {
+    const response=await fetch('/api/identity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('identity-name').value})});
+    const data=await response.json();
+    if(!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    closeTerminal();
+    renderedRoomKey=null;attentionKey=null;lastGen=null;
+    render({...dashboardData,viewer:data.viewer,beekeepers:[...(dashboardData?.beekeepers || []),data.viewer],beekeeper_mentions:[]});
+    $('identity-dialog').close();
+    try { const state=await fetch('/api/state',{cache:'no-store'});if(state.ok) render(await state.json()); } catch (_) {}
+  } catch(error) { feedback.textContent=error.message; }
+  finally { button.disabled=false; }
+});
 
 async function openFolder(path, offset = 0) {
   const list = $("file-list"), crumbs = $("file-crumbs");
@@ -557,7 +602,7 @@ async function enableMentionAlerts() {
   try {
     mentionAlerts = await Notification.requestPermission() === "granted";
     try { localStorage.setItem("hive-mention-alerts", String(mentionAlerts)); } catch (_) {}
-    $("attention-status").textContent = mentionAlerts ? "Desktop alerts enabled for @beekeeper." : "Desktop alerts are blocked by your browser. Mentions still appear in For you.";
+    $("attention-status").textContent = mentionAlerts ? "Desktop alerts enabled for messages mentioning you." : "Desktop alerts are blocked by your browser. Mentions still appear in For you.";
     $("mention-alerts").textContent = mentionAlerts ? "Disable mention alerts" : "Enable mention alerts";
   } catch (_) { $("attention-status").textContent = "Could not enable desktop alerts. Mentions still appear in For you."; }
 }
@@ -576,17 +621,17 @@ function renderAttention(d) {
       ${post.replied ? `<span class="replied">You replied</span>` : ""}
       <div class="action-row"><button type="button" data-reply-gen="${post.gen}">${post.question ? "Answer" : "Reply"}</button>
         <button type="button" data-room-done="${post.gen}" aria-label="Mark Room #${post.gen} done">Done</button></div>
-    </article>`).join("") : `<p class="empty">No mentions to handle. New @beekeeper messages will appear here.</p>`;
+    </article>`).join("") : `<p class="empty">No mentions to handle. New messages mentioning you will appear here.</p>`;
     if (!posts.length) $("attention-status").textContent = "";
     attentionKey = key;
   }
   const fresh = lastGen === null ? [] : posts.filter(post => post.gen > lastGen);
-  if (fresh.length) $("attention-status").textContent = `${fresh.map(post => post.member).join(", ")} mentioned @beekeeper. Open For you to reply.`;
+  if (fresh.length) $("attention-status").textContent = `${fresh.map(post => post.member).join(", ")} mentioned you. Open For you to reply.`;
   if (mentionAlerts && "Notification" in window && Notification.permission === "granted") {
     $("mention-alerts").textContent = "Disable mention alerts";
     for (const post of fresh) {
       try {
-        const notification = new Notification(`${post.member} · ${post.question ? "Question for you" : "@beekeeper"}`, {
+        const notification = new Notification(`${post.member} · ${post.question ? "Question for you" : "Mention for you"}`, {
           body: post.body.replace(/^> Reply to [^\n]*\n\n/, "").slice(0, 240), tag: `hive-room-${post.gen}`
         });
         notification.onclick = () => { window.focus(); showAttention(); startReply(post.gen); notification.close(); };
@@ -615,30 +660,33 @@ async function markRoomDone(button) {
 
 function renderRoom(entries, members) {
   const list = $("room");
-  const key = entries.map(e => e.gen).join(",");
+  const humans = humanNames();
+  const key = JSON.stringify([myBeekeeper(), [...humans], entries.map(e => e.gen)]);
   const identities = new Map(members.map(m => [m.member, `${m.harness || "agent"} · ${m.state}`]));
   if (key === renderedRoomKey) {
     [...list.querySelectorAll(".e")].forEach((card, index) => {
       const post = entries[index];
-      card.querySelector(".role").textContent = post.member === "beekeeper" ? "You · Beekeeper" : (identities.get(post.member) || "member");
+      card.querySelector(".role").textContent = post.member === myBeekeeper() ? "You · Beekeeper" : humans.has(post.member) ? "Beekeeper" : (identities.get(post.member) || "member");
       card.querySelector(".when").textContent = ago(post.ts);
     });
     return;
   }
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 2;
   const oldTop = list.scrollTop;
-  const known = new Set(["all", "beekeeper", ...members.map(m => m.member)]);
+  const known = new Set(["all", ...humans.keys(), ...members.map(m => m.member)]);
   const forYou = new Set((dashboardData?.beekeeper_mentions || []).map(post => post.gen));
   const fresh = lastGen === null ? 0 : entries.filter(e => e.gen > lastGen).length;
   list.innerHTML = entries.length ? entries.map(e => {
-    const mine = e.member === "beekeeper";
+    const mine = e.member === myBeekeeper();
+    const human = humans.has(e.member);
+    const name = humans.get(e.member) || e.member;
     const hue = senderHue(e.member);
-    const role = mine ? "You · Beekeeper" : (identities.get(e.member) || "member");
+    const role = mine ? "You · Beekeeper" : human ? "Beekeeper" : (identities.get(e.member) || "member");
     const initials = mine ? "YOU" : e.member.split(/[-_.]/).map(p => p[0] || "").join("").slice(0, 3).toUpperCase();
     return `<article id="room-entry-${e.gen}" class="e${mine ? " mine" : ""}${lastGen !== null && e.gen > lastGen && forYou.has(e.gen) ? " new" : ""}"
       style="--sender-hue:${hue}">
       <div class="avatar" aria-hidden="true">${esc(initials)}</div><div class="content">
-        <div class="h">${mine ? `<span class="who">${esc(e.member)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(e.member)} in Members">${esc(e.member)}</button>`}
+        <div class="h">${mine || human ? `<span class="who" title="${esc(e.member)}">${esc(name)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(e.member)} in Members">${esc(e.member)}</button>`}
           <span class="role">${esc(role)}</span><span class="when" title="${esc(e.ts || "")}">${ago(e.ts)}</span></div>
         <div class="body">${formatRoomBody(e.body, known)}</div>
         <div class="gen">Room #${e.gen} · <button type="button" class="reply-action" data-reply-gen="${e.gen}">Reply</button></div>
@@ -656,6 +704,7 @@ function renderRoom(entries, members) {
 
 function render(d) {
   dashboardData = d;
+  $('identity-button').textContent=d.viewer?.named ? `Beekeeper: ${d.viewer.name} · Change` : 'Set your name';
   const h = d.host;
   $("host-name").textContent = h.hostname + " · " + d.hive_root;
   $("gen").textContent = d.generation;
@@ -753,13 +802,14 @@ function mentionedNames(text) {
 
 function updateRecipients() {
   const names = mentionedNames($("room-message").value);
-  const known = new Set(["beekeeper", ...(dashboardData?.members || []).map(m => m.member)]);
+  const humans=humanNames();
+  const known = new Set([...humans.keys(), ...(dashboardData?.members || []).map(m => m.member)]);
   const unknown = [...names].filter(name => name !== "all" && !known.has(name));
   const preview = $("room-recipients");
   if (unknown.length) preview.innerHTML = `<span class="feedback error">Unknown member: ${unknown.map(name => `@${esc(name)}`).join(", ")}</span>`;
   else if (names.has("all")) preview.innerHTML = "Sending a prompt to <b>@all</b> members";
-  else if ([...names].some(name => name !== "beekeeper")) preview.innerHTML = `Sending a prompt to ${[...names].filter(name => name !== "beekeeper").map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
-  else if (names.has("beekeeper")) preview.textContent = "@beekeeper · You · Room only";
+  else if ([...names].some(name => !humans.has(name))) preview.innerHTML = `Sending a prompt to ${[...names].filter(name => !humans.has(name)).map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
+  else if (names.size) preview.textContent = [...names].map(name=>`@${name} · Beekeeper`).join(', ') + ' · Room only';
   else preview.textContent = "Room only · mention a member to send them a prompt";
 }
 
@@ -776,7 +826,8 @@ function updateMentionOptions() {
   const before = field.value.slice(0, field.selectionStart);
   const token = /(?:^|[^a-zA-Z0-9_./@-])@([a-z0-9._-]*)$/i.exec(before);
   if (!token) return hideMentionOptions();
-  const names = [...new Set([...(dashboardData?.members || []).map(m => m.member), "all", "beekeeper"])];
+  const humans=humanNames();
+  const names = [...new Set([...(dashboardData?.members || []).map(m => m.member), "all", ...humans.keys()])];
   const options = names.filter(name => name.startsWith(token[1].toLowerCase()));
   if (!options.length) return hideMentionOptions();
   const start = field.selectionStart - token[1].length - 1;
@@ -784,7 +835,7 @@ function updateMentionOptions() {
   if (mentionCompletion?.start !== start || mentionCompletion?.query !== token[1]) mentionIndex = 0;
   mentionIndex = Math.min(mentionIndex, options.length - 1);
   mentionCompletion = {start, end: field.selectionStart + tail.length, query: token[1], options};
-  $("mention-options").innerHTML = options.map((name, index) => `<button type="button" id="mention-option-${index}" role="option" aria-selected="${index === mentionIndex}" data-complete-mention="${esc(name)}">@${esc(name)}<small>${name === "all" ? "All members" : name === "beekeeper" ? "You" : esc(dashboardData?.members.find(m => m.member === name)?.state || "member")}</small></button>`).join("");
+  $("mention-options").innerHTML = options.map((name, index) => `<button type="button" id="mention-option-${index}" role="option" aria-selected="${index === mentionIndex}" data-complete-mention="${esc(name)}">@${esc(name)}<small>${name === "all" ? "All members" : humans.has(name) ? esc(`Beekeeper · ${humans.get(name)}`) : esc(dashboardData?.members.find(m => m.member === name)?.state || "member")}</small></button>`).join("");
   $("mention-options").hidden = false;
   field.setAttribute("aria-expanded", "true");
   field.setAttribute("aria-activedescendant", `mention-option-${mentionIndex}`);
@@ -832,7 +883,7 @@ function startReply(gen) {
   $("reply-context").innerHTML = `<b>Replying to ${esc(post.member)} · Room #${post.gen}</b><span class="reply-excerpt">${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " "))}</span>`;
   $("reply-draft").hidden = false;
   $("room-message").maxLength = 12000 - `> Reply to ${post.member} · Room #${post.gen}: ${excerpt}\n\n`.length;
-  if (post.member !== "beekeeper" && !mentionedNames($("room-message").value).has(post.member)) insertMention(post.member);
+  if (post.member !== myBeekeeper() && !mentionedNames($("room-message").value).has(post.member)) insertMention(post.member);
   $("room-message").focus();
 }
 
@@ -1045,7 +1096,7 @@ function openTerminal(member) {
   activeMember = member;
   $("term-member-name").textContent = member || "Host shell (hive user)";
   $("term-badge").textContent = member ? "MEMBER" : "SHELL";
-  $("term-steer-input").placeholder = member ? "Send a prompt to this member…" : "Run a shell command…";
+  $("term-steer-input").placeholder = member ? `Send a prompt as ${dashboardData?.viewer?.name || 'beekeeper'}…` : "Run a shell command…";
   $("term-steer-input").value = "";
 
   autoFit = window.innerWidth < 640;

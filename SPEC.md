@@ -161,6 +161,12 @@ terminals backed by the same Hive commands and Unix sessions.
 
 The dashboard must never become necessary for Hive correctness.
 
+Trusted human collaborators can choose a browser-local Beekeeper name. Room
+posts and member prompts carry that identity; named mentions and notification
+dismissals remain personal. Human profiles live under `beekeepers/`, separate
+from agent nests, so `@all` never launches a human as a member. Names are labels;
+tailnet membership and network rules control who can reach the dashboard.
+
 ## 4. Host, NixOS, and Privilege Model
 
 Target host:

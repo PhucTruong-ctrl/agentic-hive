@@ -123,6 +123,11 @@ work when possible instead of blocking the harness with an interactive question.
 Do not guess the answer or proceed with work that depends on it. Machine/tool
 permission requests still use the harness's actual permission mechanism.
 
+The WebUI may have several named Beekeepers. Use `@beekeeper-name` to address
+the person who sent a request; `@beekeeper` addresses everyone. Human names are
+Room identities. Preserve who requested a change and address follow-up questions
+to that person.
+
 Room mentions in `hive say` work like the Beekeeper's WebUI: `@member` sends
 that peer a prompt; `@all` prompts all other members. Stopped targets wake.
 Mentions do not elevate peer requests to Beekeeper authority. Use targeted
