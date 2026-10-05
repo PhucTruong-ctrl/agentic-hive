@@ -5,8 +5,9 @@
 
 GET /            the dashboard page (polls /api/state)
 GET /api/state   JSON snapshot of members, claims, Room and host
-GET /api/files   Browse Room, shared files, and member nests
+GET /api/files   Browse projects, shared files, and member nests
 GET /api/file    Preview or download one allowed file
+POST /api/room-done  Dismiss one Beekeeper notification
 
 Runs as the unprivileged hive user. Telemetry is a hint; process state wins.
 """
@@ -529,8 +530,12 @@ def state():
     }
 
 
-def beekeeper_mentions(posts):
-    """An attention view of Room history, not a separate question registry."""
+def room_done_path(generation):
+    return HIVE_ROOT / "members" / WEB_MEMBER / "state" / "room-done" / str(generation)
+
+
+def beekeeper_mentions(posts, include_done=False):
+    """Room mentions with human reply/dismissal context, without duplicating posts."""
     answered = set()
     for post in posts:
         if post["member"] == WEB_MEMBER:
@@ -539,16 +544,17 @@ def beekeeper_mentions(posts):
                 answered.add((reply[1], int(reply[2])))
     pending = []
     for post in posts:
-        if post["member"] == WEB_MEMBER or (post["member"], post["gen"]) in answered:
+        if post["member"] == WEB_MEMBER or (not include_done and room_done_path(post["gen"]).is_file()):
             continue
         body = re.sub(r"^> Reply to [^\n]*\n\n", "", post["body"])
         names = {m.rstrip(".,;:") for m in re.findall(r"(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})", body)}
         if WEB_MEMBER in names:
-            pending.append({**post, "question": "?" in body or "？" in body})
+            pending.append({**post, "question": "?" in body or "？" in body,
+                            "replied": (post["member"], post["gen"]) in answered})
     return pending
 
 
-def run_hive(binary, *args, input_text=None, member=None, timeout=45):
+def run_hive(binary, *args, input_text=None, member=None, timeout=90):
     env = os.environ.copy()
     env["HIVE_ROOT"] = str(HIVE_ROOT)
     if member:
@@ -731,12 +737,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n", "text/plain")
 
     def do_POST(self):
-        if self.path in ("/api/steer", "/api/member", "/api/room"):
+        if self.path in ("/api/steer", "/api/member", "/api/room", "/api/room-done"):
             if not self._same_origin():
                 self._send(403, json.dumps({"ok": False, "error": "cross-origin request denied"}), "application/json")
                 return
             try:
                 req = self._json_request()
+                if self.path == "/api/room-done":
+                    generation = req.get("generation")
+                    if type(generation) is not int or generation < 1:
+                        raise ValueError("valid Room generation required")
+                    marker = room_done_path(generation)
+                    if not marker.is_file():
+                        if not any(post["gen"] == generation for post in beekeeper_mentions(room(limit=None), include_done=True)):
+                            raise ValueError("Beekeeper mention not found")
+                        marker.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            marker.open("x").close()
+                        except FileExistsError:
+                            pass
+                    self._send(200, json.dumps({"ok": True}), "application/json")
+                    return
                 if self.path == "/api/member":
                     member = req.get("member", "")
                     action = req.get("action", "")
@@ -758,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(body, str) or not body.strip() or len(body) > 12000:
                         raise ValueError("message must be 1–12000 characters")
                     run_hive("hive", "join", WEB_MEMBER)
-                    report = json.loads(run_hive("hive", "say", "--json", "-", input_text=body, member=WEB_MEMBER))
+                    report = json.loads(run_hive("hive", "say", "--json", "-", input_text=body, member=WEB_MEMBER, timeout=300))
                     self._send(200, json.dumps(report), "application/json")
                     return
                 member = req.get("member", "")

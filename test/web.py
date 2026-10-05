@@ -269,12 +269,14 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         mentions = web.beekeeper_mentions(posts)
         self.assertEqual([post["gen"] for post in mentions], [7, 8])
         self.assertEqual([post["question"] for post in mentions], [True, False])
-        # A peer answer and a human reply to another sender cannot clear this question.
+        # Only a human reply to the exact sender/generation marks it replied.
         posts += [{"gen": 10, "member": "bob", "body": "> Reply to alice · Room #7: choose?\n\nI prefer B"},
                   {"gen": 11, "member": "beekeeper", "body": "> Reply to bob · Room #7: choose?\n\n@bob B"}]
         self.assertEqual(len(web.beekeeper_mentions(posts)), 2)
+        self.assertFalse(web.beekeeper_mentions(posts)[0]["replied"])
         posts.append({"gen": 12, "member": "beekeeper", "body": "> Reply to alice · Room #7: choose?\n\n@alice B"})
-        self.assertEqual([post["gen"] for post in web.beekeeper_mentions(posts)], [8])
+        self.assertEqual([post["gen"] for post in web.beekeeper_mentions(posts)], [7, 8])
+        self.assertTrue(web.beekeeper_mentions(posts)[0]["replied"])
 
     def test_question_survives_room_display_window_and_answer_prompts_member(self):
         web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")
@@ -287,7 +289,29 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         status, report = self.request("/api/room", {"message": "> Reply to alice · Room #1: Which direction?\n\n@alice Go with B"})
         self.assertEqual(status, 200)
         self.assertEqual(report["sent"], ["alice"])
+        self.assertTrue(web.beekeeper_mentions(web.room(limit=None))[0]["replied"])
+        status, report = self.request("/api/room-done", {"generation": 1})
+        self.assertEqual(status, 200)
         self.assertEqual(web.beekeeper_mentions(web.room(limit=None)), [])
+        # Dismissal survives polling/reloading and does not alter shared history.
+        history = (self.root / "ROOM.md").read_text()
+        status, _ = self.request("/api/room-done", {"generation": 1})
+        self.assertEqual(status, 200)
+        self.assertEqual((self.root / "ROOM.md").read_text(), history)
+        self.assertTrue(web.room_done_path(1).is_file())
+
+    def test_mark_done_only_affects_the_selected_human_notification(self):
+        web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")
+        web.run_hive("hive", "say", "@beekeeper Capture ready", member="bob")
+        web.run_hive("hive", "say", "Ordinary update", member="alice")
+        status, _ = self.request("/api/room-done", {"generation": 2})
+        self.assertEqual(status, 200)
+        self.assertEqual([p["gen"] for p in web.beekeeper_mentions(web.room(limit=None))], [1])
+        self.assertFalse((self.root / "sent-targets").exists())
+        for generation in (3, 999, -1, True, "../ROOM.md", None):
+            self.assertEqual(self.request("/api/room-done", {"generation": generation})[0], 400)
+        self.assertEqual(self.request("/api/room-done", {"generation": 1}, origin="http://other.local")[0], 403)
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "3")
 
     def test_fragmented_websocket_input(self):
         class OneByteSocket:

@@ -110,12 +110,16 @@
     box-shadow: 0 2px 10px rgba(0,0,0,.12); }
   .jump-latest[hidden] { display: none; }
   .e.new { animation: flash 2.5s ease-out; }
-  .attention { flex-shrink: 0; max-height: 160px; overflow: auto; margin-bottom: 10px; border: 1px solid var(--accent); border-radius: 7px; }
+  .room-tabs { margin-bottom: 10px; }
+  .room-scroll[hidden] { display: none; }
+  .attention { flex: 1; min-height: 0; overflow: auto; }
   .attention[hidden] { display: none; }
-  .attention-item { padding: 8px 10px; border-bottom: 1px solid var(--line); }
-  .attention-item:last-child { border-bottom: 0; }
-  .attention-item p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
-  .attention-item button { border: 0; background: none; color: var(--accent); cursor: pointer; font: 600 12px system-ui; padding: 0; }
+  .attention-item { padding: 12px; margin: 0 3px 10px 0; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; }
+  .attention-item .h { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+  .attention-item .h small { color: var(--muted); margin-left: auto; }
+  .attention-item p { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .attention-item .action-row { margin-top: 8px; }
+  .attention-item .replied { color: var(--working); font-size: 12px; }
   .mention-input { position: relative; }
   .mention-options { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 2; max-height: 200px; overflow: auto;
     background: var(--panel); border: 1px solid var(--accent); border-radius: 7px; box-shadow: 0 4px 18px rgba(0,0,0,.15); }
@@ -290,8 +294,12 @@
   </section>
   <section class="room-panel" id="room-panel">
     <div class="room-heading"><h2>Room <span class="n" id="r-count"></span></h2><button class="room-expand" id="room-expand" type="button" onclick="toggleRoomExpanded()" aria-label="Expand Room" aria-expanded="false">Expand</button></div>
-    <div class="attention" id="room-attention" aria-label="Room mentions for you" hidden></div>
-    <div class="room-scroll"><div class="room" id="room" role="log" aria-label="Room messages" aria-live="off"></div>
+    <nav class="member-tabs room-tabs" role="tablist" aria-label="Room views">
+      <button class="active" id="room-tab-all" role="tab" aria-selected="true" aria-controls="room-feed-panel" data-room-tab="all">All messages</button>
+      <button id="room-tab-for-you" role="tab" tabindex="-1" aria-selected="false" aria-controls="room-attention" data-room-tab="for-you">For you <span id="for-you-count"></span></button>
+    </nav>
+    <div class="attention" id="room-attention" role="tabpanel" aria-labelledby="room-tab-for-you" hidden></div>
+    <div class="room-scroll" id="room-feed-panel" role="tabpanel" aria-labelledby="room-tab-all"><div class="room" id="room" role="log" aria-label="Room messages" aria-live="off"></div>
       <button class="jump-latest" id="jump-latest" onclick="jumpToLatest()" hidden>↓ Latest messages</button></div>
     <div class="room-compose">
       <div class="reply-draft" id="reply-draft" hidden><span class="context" id="reply-context"></span><button type="button" onclick="cancelReply()" title="Cancel reply" aria-label="Cancel reply">×</button></div>
@@ -408,6 +416,7 @@ let fileRequest = 0;
 let mentionCompletion = null;
 let mentionIndex = 0;
 let attentionKey = null;
+let currentRoomTab = "all";
 let mentionAlerts = false;
 try { mentionAlerts = localStorage.getItem("hive-mention-alerts") === "true"; } catch (_) {}
 
@@ -513,8 +522,21 @@ function jumpToLatest() {
   $("jump-latest").hidden = true;
 }
 
+function showRoomTab(tab) {
+  currentRoomTab = tab;
+  $("room-attention").hidden = tab !== "for-you";
+  $("room-feed-panel").hidden = tab !== "all";
+  document.querySelectorAll("[data-room-tab]").forEach(button => {
+    const active = button.dataset.roomTab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+}
+
 function showAttention() {
   showTab("overview");
+  showRoomTab("for-you");
   $("room-attention").scrollIntoView({behavior: "smooth", block: "center"});
 }
 
@@ -539,18 +561,21 @@ async function enableMentionAlerts() {
 }
 
 function renderAttention(d) {
-  const posts = d.beekeeper_mentions || [];
+  const posts = [...(d.beekeeper_mentions || [])].reverse();
   const key = JSON.stringify(posts);
   $("attention-link").hidden = posts.length === 0;
   $("attention-link").textContent = `For you · ${posts.length}`;
+  $("for-you-count").textContent = `(${posts.length})`;
   document.title = posts.length ? `Hive · ${posts.length} for you` : "Hive";
   if (key !== attentionKey) {
-    $("room-attention").hidden = posts.length === 0;
-    $("room-attention").innerHTML = posts.map(post => `<div class="attention-item">
-      <b>${post.question ? "Question for you" : "For you"} · ${esc(post.member)}</b>
+    $("room-attention").innerHTML = posts.length ? posts.map(post => `<article class="attention-item" data-attention-gen="${post.gen}">
+      <div class="h"><b>${esc(post.member)}</b><span>${post.question ? "Question for you" : "Mentioned you"}</span><small>${ago(post.ts)} · Room #${post.gen}</small></div>
       <p>${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, ""))}</p>
-      <button type="button" data-reply-gen="${post.gen}">${post.question ? "Answer" : "Reply"} · Room #${post.gen}</button>
-    </div>`).join("");
+      ${post.replied ? `<span class="replied">You replied</span>` : ""}
+      <div class="action-row"><button type="button" data-reply-gen="${post.gen}">${post.question ? "Answer" : "Reply"}</button>
+        <button type="button" data-room-done="${post.gen}" aria-label="Mark Room #${post.gen} done">Done</button></div>
+    </article>`).join("") : `<p class="empty">No mentions to handle. New @beekeeper messages will appear here.</p>`;
+    if (!posts.length) $("attention-status").textContent = "";
     attentionKey = key;
   }
   const fresh = lastGen === null ? [] : posts.filter(post => post.gen > lastGen);
@@ -562,10 +587,28 @@ function renderAttention(d) {
         const notification = new Notification(`${post.member} · ${post.question ? "Question for you" : "@beekeeper"}`, {
           body: post.body.replace(/^> Reply to [^\n]*\n\n/, "").slice(0, 240), tag: `hive-room-${post.gen}`
         });
-        notification.onclick = () => { window.focus(); startReply(post.gen); notification.close(); };
+        notification.onclick = () => { window.focus(); showAttention(); startReply(post.gen); notification.close(); };
       } catch (_) {} // In-page attention remains available when desktop alerts are unavailable.
     }
   }
+}
+
+async function markRoomDone(button) {
+  button.disabled = true;
+  const feedback = $("room-feedback");
+  try {
+    const response = await fetch("/api/room-done", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({generation: Number(button.dataset.roomDone)})});
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const next = await fetch("/api/state", {cache: "no-store"});
+    if (!next.ok) throw new Error(`HTTP ${next.status}`);
+    render(await next.json());
+    feedback.classList.remove("error");
+    feedback.textContent = "Marked done.";
+  } catch (err) {
+    feedback.classList.add("error");
+    feedback.textContent = `Could not mark done: ${err.message}`;
+  } finally { button.disabled = false; }
 }
 
 function renderRoom(entries, members) {
@@ -828,6 +871,8 @@ document.addEventListener("click", async e => {
   if (!b) return;
   if (b.dataset.tab) return showTab(b.dataset.tab);
   if (b.dataset.memberTab) return showMemberTab(b.dataset.memberTab);
+  if (b.dataset.roomTab) return showRoomTab(b.dataset.roomTab);
+  if (b.dataset.roomDone) return markRoomDone(b);
   if (b.dataset.completeMention) return completeMention(b.dataset.completeMention);
   if (b.dataset.filesMore) return openFolder(currentFolder, Number(b.dataset.filesMore));
   if (b.dataset.projectFolder) { filesLoaded = true; showTab("files"); return openFolder(b.dataset.projectFolder); }
@@ -873,6 +918,14 @@ $("room").addEventListener("scroll", () => {
   }
 });
 document.addEventListener("keydown", e => {
+  const tab = e.target.closest("[data-room-tab]");
+  if (tab && ["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+    e.preventDefault();
+    const target = e.key === "Home" ? "all" : e.key === "End" ? "for-you" : currentRoomTab === "all" ? "for-you" : "all";
+    showRoomTab(target);
+    $("room-tab-" + target).focus();
+    return;
+  }
   if (e.key === "Escape" && document.body.classList.contains("room-expanded")) toggleRoomExpanded();
 });
 

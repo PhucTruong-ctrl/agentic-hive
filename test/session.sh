@@ -17,9 +17,10 @@ if [[ $1 == has-session ]]; then [[ ${HIVE_TEST_LIVE:-0} == 1 ]]; exit; fi
 if [[ $1 == list-panes ]]; then [[ ${HIVE_TEST_LIVE:-0} == 1 ]] && printf '%s\n' "$HIVE_TEST_AGENT_PID"; exit; fi
 printf 'tmux %s\n' "$*" >>"$HIVE_TEST_LOG"
 case $1 in
-  load-buffer) cat >"$HIVE_ROOT/pending-prompt"; echo 0 >"$HIVE_ROOT/enters" ;;
+  load-buffer) cat >"$HIVE_ROOT/pending-prompt"; echo 0 >"$HIVE_ROOT/enters"; rm -f "$HIVE_ROOT/queued-prompt" "$HIVE_ROOT/ack-ticks" ;;
   display-message) echo 1 ;;
   capture-pane)
+    if [[ -f $HIVE_ROOT/queued-prompt ]]; then printf '› Ask Codex to do anything\n› Ask Codex to do anything\n'; exit; fi
     printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"
     if [[ ${HIVE_TEST_DIALOG:-0} == 1 && -f $HIVE_ROOT/pending-prompt ]]; then echo 'Permission required'
     else printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"; fi
@@ -27,6 +28,11 @@ case $1 in
   send-keys)
     n=$(cat "$HIVE_ROOT/enters"); n=$((n + 1)); echo "$n" >"$HIVE_ROOT/enters"
     if [[ ${HIVE_TEST_NO_ACK:-0} != 1 && $n -gt ${HIVE_TEST_DROP_ENTER:-0} ]]; then
+      if [[ ${HIVE_TEST_ACK_DELAY_N:-0} -gt 0 ]]; then
+        : >"$HIVE_ROOT/queued-prompt"
+        printf '%s\n' "$(cat "$HIVE_ROOT/pending-prompt")" >>"$HIVE_ROOT/accepted-prompts"
+        exit
+      fi
       jq -n --rawfile prompt "$HIVE_ROOT/pending-prompt" '{prompt: $prompt}' |
         "$HIVE_TEST_HOOK" codex UserPromptSubmit >/dev/null
       printf '%s\n' "$(cat "$HIVE_ROOT/pending-prompt")" >>"$HIVE_ROOT/accepted-prompts"
@@ -44,6 +50,13 @@ EOF
 cat >"$tmp/bin/sleep" <<'EOF'
 #!/usr/bin/env bash
 printf 'sleep %s\n' "$*" >>"$HIVE_TEST_LOG"
+if [[ ${HIVE_TEST_ACK_DELAY_N:-0} -gt 0 && -f $HIVE_ROOT/queued-prompt ]]; then
+  n=$(cat "$HIVE_ROOT/ack-ticks" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$HIVE_ROOT/ack-ticks"
+  if [[ $n == "$HIVE_TEST_ACK_DELAY_N" ]]; then
+    jq -n --rawfile prompt "$HIVE_ROOT/pending-prompt" '{prompt: $prompt}' |
+      "$HIVE_TEST_HOOK" codex UserPromptSubmit >/dev/null
+  fi
+fi
 EOF
 chmod +x "$tmp/bin/"*
 export PATH="$tmp/bin:$repo/bin:$PATH"
@@ -71,6 +84,14 @@ printf 'live member submission confirmed by hook\n'
 HIVE_TEST_LIVE=1 HIVE_TEST_DROP_ENTER=1 "$repo/bin/hive-member" send bob 'retry the swallowed Enter' >/dev/null
 [[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 2 ]]
 printf 'swallowed Enter retried without duplicate paste\n'
+
+: >"$HIVE_TEST_LOG"
+HIVE_TEST_LIVE=1 HIVE_TEST_ACK_DELAY_N=32 "$repo/bin/hive-member" send bob 'accepted now; hook arrives later' >"$tmp/out"
+[[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 1 ]]
+rg -q 'submission confirmed' "$tmp/out"
+if rg -q 'already running' "$tmp/out"; then echo 'send result includes irrelevant running state' >&2; exit 1; fi
+printf 'delayed receipt confirmed without resubmitting accepted input\n'
+rm -f "$HIVE_ROOT/queued-prompt" "$HIVE_ROOT/ack-ticks"
 
 : >"$HIVE_TEST_LOG"
 rm -f "$HIVE_ROOT/pending-prompt"

@@ -147,11 +147,15 @@ if submission cannot be confirmed, Hive reports it so the terminal can be checke
 ![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
 
 Members can ask `hive say '@beekeeper Which direction should we use?'`.
-Explicit `@beekeeper` mentions appear in **For you**; questions have an
+Explicit `@beekeeper` mentions appear as separate cards in the Room's **For you**
+tab; questions have an
 **Answer** shortcut that replies to the original post and prompts its member.
-Unanswered mentions remain visible beyond the Room's last forty displayed
-posts, within its bounded history window. A Beekeeper reply to that post clears
-the mention. This view comes from Room history, with no separate question queue.
+Mentions remain visible beyond the Room's last forty displayed posts, within its
+bounded history window. Replying marks a card **You replied**. Click **Done** to
+remove a handled notification; dismissal survives refreshes and other browsers.
+Done keeps the original Room message and sends no prompts. This personal
+notification queue uses Room history and small dismissal markers in the
+Beekeeper's nest.
 
 Routine peer chat stays quiet. Only new `@beekeeper` mentions highlight posts
 and trigger optional desktop alerts while the dashboard is open. Click
@@ -160,7 +164,7 @@ Incoming messages preserve keyboard focus and drafts; clicking Answer opens
 the reply composer. Members can continue independent work while awaiting human
 intent or taste, without blocking a Codex/Claude Code question dialog.
 
-![A Beekeeper question with its Answer shortcut and member mention suggestions](docs/dashboard-questions.png)
+![For you Room tab with separate notification cards, reply status, Done actions, and mention suggestions](docs/dashboard-questions.png)
 
 ### Claims and Git projects: see shared seams
 

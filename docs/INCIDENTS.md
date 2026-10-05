@@ -38,3 +38,19 @@ Change: allow the service to write shared `/tmp`, retaining access to existing
 tmux sockets. Allocate delivery scratch before appending the Room post. A
 focused regression test verifies that an unavailable temporary directory leaves
 Room history and generation unchanged and sends no prompts.
+
+## 2026-10-05 — accepted prompt reported as unconfirmed
+
+Observed: a WebUI post to `sol-3` at 03:38:54 reported unconfirmed delivery.
+The member received and answered it; its matching UserPromptSubmit receipt was
+written at 03:39:14, after the roughly eleven-second confirmation window.
+The informational `already running (idle)` line obscured that timeout.
+
+Change: allow roughly 45 seconds for submission receipts, including queued
+input on busy harnesses, and give WebUI subprocesses enough time for delivery
+batches. Working and idle members still share the same paste/submit path;
+stopped members launch with the prompt. Send results omit the running-state
+line. Confirmation still requires the matching hook receipt and never repastes.
+An isolated real Codex check queued a second prompt during a running tool and
+confirmed its submission 31 seconds later. A delayed-receipt regression also
+checks that accepted input gets one paste and one Enter.

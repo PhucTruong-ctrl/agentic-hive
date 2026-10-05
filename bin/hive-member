@@ -150,7 +150,9 @@ confirm_prompt() {
   local m="$1" message="$2" before="$3" retry="${4:-0}" before_draft="${5:-}" receipt hash draft attempt
   local receipt_file="$HIVE_ROOT/members/$1/state/last-submitted-prompt"
   hash=$(printf '%s' "$message" | jq -Rrjs 'gsub("^\\s+|\\s+$"; "")' | sha256sum | cut -d' ' -f1)
-  for attempt in $(seq 21); do
+  # A busy harness may accept/queue the input before firing UserPromptSubmit.
+  # Give that receipt time to arrive without repasting an accepted prompt.
+  for attempt in $(seq 91); do
     sleep 0.5
     receipt=$(cat "$receipt_file" 2>/dev/null || true)
     if [[ $receipt != "$before" && ${receipt#* } == "$hash" ]]; then
@@ -192,7 +194,7 @@ cmd_wake() (
   # Serialize the entire wake/paste/submit exchange, including cold starts.
   if [[ -n $message ]]; then
     exec 7>>"$HIVE_ROOT/members/$m/state/.prompt.lock"
-    flock -w 30 7 || die "another prompt to $m is still being delivered"
+    flock -w 90 7 || die "another prompt to $m is still being delivered"
   fi
   # A newly launched harness may not have fired SessionStart yet. Do not
   # mistake that short gap for a dead pane and kill it before it gets a prompt.
@@ -203,8 +205,8 @@ cmd_wake() (
     done
   fi
   if harness_alive "$m"; then
-    say "$m is already running ($(state "$m"))"
-    [[ -z $message ]] || send_prompt "$m" "$message"
+    if [[ -n $message ]]; then send_prompt "$m" "$message"
+    else say "$m is already running ($(state "$m"))"; fi
     exec 7>&-
     ((no_attach)) || attach "$m"
     return 0
