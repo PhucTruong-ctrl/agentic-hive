@@ -10,6 +10,8 @@ HIVE_MEMBER_BIN="${HIVE_MEMBER_BIN:-${HIVE_SESSION_BIN:-hive-member}}"
 ROOM="$HIVE_ROOT/ROOM.md"
 GEN_FILE="$HIVE_ROOT/.room-generation"
 ROOM_LOCK="$HIVE_ROOT/.room.lock"
+MEMBER_HELPER="${HIVE_SHARE:-$(dirname "$(readlink -f "$0")")/../share/agentic-hive}/hive_members.py"
+[[ -f $MEMBER_HELPER ]] || MEMBER_HELPER="$(dirname "$(readlink -f "$0")")/../share/hive_members.py"
 
 die() { printf 'hive: %s\n' "$*" >&2; exit 1; }
 now() { date --iso-8601=seconds; }
@@ -20,7 +22,7 @@ usage:
   hive init
   hive join <member>
   hive say [--json] [--room-only] <message...>
-                               (or: hive say - < file; @member/@all also prompt peers)
+                               (or: hive say - < file; @member/@team/@all prompt peers)
   hive room [--last N] [--since-last] [--since G]
   hive observe
   hive claim <resource> [resource...]
@@ -82,7 +84,16 @@ room_last_gen() {
 #   $1 since   $2 exclude-member (or "")   $3 max entries (0 = all)
 room_entries() {
   [[ -f $ROOM ]] || return 0
-  gawk -v since="$1" -v exclude="$2" -v max="$3" -v maxlines=40 '
+  local labels
+  labels=$(python3 "$MEMBER_HELPER" list | jq -r '.members[] | [.member, .name, (.team // "")] | @tsv')
+  gawk -v since="$1" -v exclude="$2" -v max="$3" -v maxlines=40 -v labels="$labels" '
+    BEGIN {
+      count = split(labels, rows, "\n")
+      for (j = 1; j <= count; j++) {
+        split(rows[j], fields, "\t")
+        names[fields[1]] = fields[2]; teams[fields[1]] = fields[3]
+      }
+    }
     function flush(   n, s, i, out) {
       if (gen == "") return
       if (gen + 0 > since + 0 && member != exclude) {
@@ -92,7 +103,10 @@ room_entries() {
         while (n > 0 && body[n] ~ /^[[:space:]]*$/) n--
         s = 1
         while (s <= n && body[s] ~ /^[[:space:]]*$/) s++
-        out = sprintf("[%s] %s — %s\n", gen, member, ts)
+        author = names[member] != "" ? names[member] : member
+        if (author != member) author = author " (" member ")"
+        if (teams[member] != "") author = author " @" teams[member]
+        out = sprintf("[%s] %s — %s\n", gen, author, ts)
         for (i = s; i <= n && i - s < maxlines; i++) out = out "    " body[i] "\n"
         if (n - s + 1 > maxlines) out = out "    … (truncated; full entry in ROOM.md)\n"
         entries[++ne] = out
@@ -171,15 +185,24 @@ cmd_join() {
   [[ -n $m ]] || die "usage: hive join <member>"
   valid_member "$m" || die "invalid member name: $m (use lowercase letters, digits, . _ -)"
   require_init
+  exec 8>>"$HIVE_ROOT/.members.lock"
+  flock 8
+  if [[ ! -d $HIVE_ROOT/members/$m ]] && ! is_beekeeper "$m"; then
+    local roster; roster=$(python3 "$MEMBER_HELPER" list)
+    if jq -e --arg m "$m" '(.teams | has($m)) or any(.members[]; .name == $m)' <<<"$roster" >/dev/null; then
+      die "name '$m' is already a member name or team tag"
+    fi
+  fi
   local nest; nest=$(nest_dir "$m")
   mkdir -p "$nest"/{state,notes,scratch,artifacts}
   [[ -e $(cursor_file "$m") ]] || atomic_write "$(cursor_file "$m")" 0
   echo "hive: $m joined ($nest)"
+  flock -u 8
 }
 
 cmd_say() {
   require_init
-  local m body g ts json=0 room_only=0 names humans mentions unknown targets=() target report results detail prompt status active=0
+  local m body g ts json=0 room_only=0 names humans mentions unknown roster targets=() target report results detail prompt status active=0
   m=$(require_member)
   while (($#)); do
     case $1 in
@@ -195,10 +218,8 @@ cmd_say() {
   fi
   [[ -n ${body//[[:space:]]/} ]] || die "usage: hive say <message...>"
   if ((!room_only)); then
-    names=$(for target in "$HIVE_ROOT"/members/*/; do
-      target=${target%/}; target=${target##*/}
-      valid_member "$target" && printf '%s\n' "$target"
-    done | jq -Rsc 'split("\n") | map(select(length > 0))')
+    roster=$(python3 "$MEMBER_HELPER" list)
+    names=$(jq -c '[.members[].member]' <<<"$roster")
     humans=$(for target in "$HIVE_ROOT"/beekeepers/*/state/beekeeper.json; do
       [[ -f $target ]] || continue
       target=${target%/state/beekeeper.json}
@@ -206,11 +227,13 @@ cmd_say() {
       valid_member "$target" && printf '%s\n' "$target" || true
     done | jq -Rsc 'split("\n") | map(select(length > 0))')
     mentions=$(printf '%s' "$body" | jq -Rsc '[scan("(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})")[] | sub("[.,;:]+$"; "")] | unique')
-    unknown=$(jq -nr --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '$mentions - $names - $humans - ["all", "beekeeper"] | join(", ")')
+    unknown=$(jq -nr --argjson roster "$roster" --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '$mentions - $names - [$roster.members[].name] - ($roster.teams | keys) - $humans - ["all", "beekeeper"] | join(", ")')
     [[ -z $unknown ]] || die "unknown member: $unknown"
-    mapfile -t targets < <(jq -nr --arg m "$m" --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '
-      (if $mentions | index("all") then $names else $mentions end)
-      | . - [$m, "beekeeper"] - $humans | sort | .[]')
+    mapfile -t targets < <(jq -nr --arg m "$m" --argjson roster "$roster" --argjson names "$names" --argjson humans "$humans" --argjson mentions "$mentions" '
+      [ $mentions[] as $tag | if $tag == "all" then $names[]
+        elif $roster.teams[$tag] then $roster.teams[$tag][]
+        else $roster.members[] | select(.member == $tag or .name == $tag) | .member end ]
+      | unique - [$m, "beekeeper"] - $humans | sort | .[]')
   fi
   # Keep bodies from forging entry markers.
   body=$(printf '%s\n' "$body" | sed 's/^<!-- hive:entry/ &/')
@@ -430,6 +453,7 @@ cmd_message() {
   m=$(require_member)
   target="${1:-}"; (($#)) && shift
   valid_member "$target" || die "usage: hive message <member> <message...>"
+  target=$(python3 "$MEMBER_HELPER" resolve "$target") || exit 1
   [[ -d $HIVE_ROOT/members/$target ]] || die "unknown member: $target"
   [[ $target != "$m" ]] || die "cannot message yourself"
   body="$*"
@@ -460,6 +484,7 @@ cmd_delegate() {
   [[ -n $target ]] || die "usage: hive delegate <target-member> --task <desc> [--worktree <dir>] [--branch <br>] [--claim <path>...]"
   shift
   valid_member "$target" || die "invalid target member name: $target"
+  target=$(python3 "$MEMBER_HELPER" resolve "$target") || exit 1
   [[ -d $HIVE_ROOT/members/$target ]] || die "target member '$target' has not joined"
   [[ $target != "$m" ]] || die "cannot delegate task to yourself"
 
@@ -613,6 +638,7 @@ main() {
     knowledge) cmd_knowledge "$@" ;;
     # Used by harness adapters; not part of the agent-facing surface.
     _entries) room_entries "$@" ;;
+    _resolve) python3 "$MEMBER_HELPER" resolve "$@" ;;
     -h | --help | help | "") usage ;;
     *) usage >&2; exit 2 ;;
   esac

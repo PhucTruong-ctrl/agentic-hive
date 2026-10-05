@@ -242,12 +242,15 @@
   .reply-draft button { flex: 0 0 auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: 16px system-ui; }
   .feedback { color: var(--muted); font-size: 12px; min-height: 18px; }
   .feedback.error { color: var(--dead); }
-  #identity-dialog { width: min(360px, calc(100vw - 48px)); box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--bg); color: var(--ink); }
-  #identity-dialog::backdrop { background: #0005; }
-  #identity-dialog h2 { margin: 0 0 12px; font-size: 18px; }
-  #identity-dialog p { color: var(--muted); font-size: 13px; line-height: 1.5; }
-  #identity-dialog label { display: block; font-size: 13px; margin: 14px 0 6px; }
-  #identity-name { box-sizing: border-box; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+  .profile-dialog { width: min(400px, calc(100vw - 48px)); max-height: calc(100vh - 40px); overflow-y: auto; box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 22px; background: var(--bg); color: var(--ink); }
+  .profile-dialog::backdrop { background: #0005; }
+  .profile-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  .profile-dialog p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+  .profile-dialog label { display: block; font-size: 13px; margin: 14px 0 6px; }
+  .profile-dialog input { box-sizing: border-box; width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+  .team-filter { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; font-size: 13px; color: var(--muted); }
+  .team-filter select { min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 6px; background: var(--panel); color: var(--ink); font: inherit; }
+  .team-tag { color: var(--accent); background: var(--chip); border: 0; border-radius: 4px; padding: 3px 6px; font: 12px var(--mono); cursor: pointer; max-width: 100%; text-align: left; overflow-wrap: anywhere; }
   .quota-stat { grid-column: span 2; }
   .quota-lines { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 7px 12px; margin-top: 4px; }
   .quota-window { min-width: 0; font-size: 12px; }
@@ -299,6 +302,7 @@
       <button data-member-tab="idle">Idle <span id="idle-count"></span></button>
       <button data-member-tab="inactive">Inactive <span id="inactive-count"></span></button>
     </nav>
+    <label class="team-filter" for="team-filter">Team <select id="team-filter" onchange="showTeam(this.value)"><option value="">All members</option></select></label>
     <div class="members" id="members"></div>
   </section>
   <section class="room-panel" id="room-panel">
@@ -341,7 +345,7 @@
   <footer>Hive dashboard · refreshes every 3 seconds</footer>
 </div>
 
-<dialog id="identity-dialog" aria-labelledby="identity-title">
+<dialog id="identity-dialog" class="profile-dialog" aria-labelledby="identity-title">
   <form id="identity-form">
     <h2 id="identity-title">Your Beekeeper name</h2>
     <p>Choose a distinct name so members know who is speaking. This browser remembers it. Your tailnet controls access to Hive.</p>
@@ -350,6 +354,19 @@
     <p>Room posts and prompts use <b>@beekeeper-yourname</b>. Changing your name keeps earlier messages under their original author.</p>
     <div class="feedback" id="identity-feedback" role="status"></div>
     <div class="action-row"><button id="identity-save" type="submit">Save name</button><button type="button" onclick="$('identity-dialog').close()">Cancel</button></div>
+  </form>
+</dialog>
+
+<dialog id="member-dialog" class="profile-dialog" aria-labelledby="member-title">
+  <form id="member-form">
+    <h2 id="member-title">Member name &amp; team</h2>
+    <p>Renaming keeps the member's existing session and history. Teams share this Room; mentioning a team prompts its members.</p>
+    <label for="member-name">Member name</label><input id="member-name" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" required>
+    <label for="member-team">Team tag</label><input id="member-team" list="known-teams" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}" placeholder="e.g. titantwoshot or poke"><datalist id="known-teams"></datalist>
+    <label for="member-workdir">Working folder</label><input id="member-workdir" list="known-workdirs" placeholder="Existing project or worktree path"><datalist id="known-workdirs"></datalist>
+    <p>A saved folder applies on the next wake or restart. Current work continues. Clear the team to leave it.</p>
+    <div class="feedback" id="member-feedback" role="status"></div>
+    <div class="action-row"><button id="member-save" type="submit">Save</button><button type="button" onclick="$('member-dialog').close()">Cancel</button></div>
   </form>
 </dialog>
 
@@ -426,6 +443,8 @@ let lastGen = null;
 let dashboardData = null;
 let currentTab = "overview";
 let currentMemberTab = "working";
+let currentTeam = "";
+let editingMember = null;
 let memberTabChosen = false;
 let unseenRoom = 0;
 let replyTo = null;
@@ -453,6 +472,37 @@ function showTab(tab) {
 
 function myBeekeeper() { return dashboardData?.viewer?.member || "beekeeper"; }
 function humanNames() { return new Map((dashboardData?.beekeepers || [{member:"beekeeper",name:"beekeeper"}]).map(person=>[person.member,person.name])); }
+function findMember(name) { return dashboardData?.members.find(m=>m.member===name || (m.name || m.member)===name); }
+function memberName(name) { return findMember(name)?.name || name; }
+function teamGroups() {
+  const teams=new Map();
+  for(const m of dashboardData?.members || []) if(m.team) { if(!teams.has(m.team)) teams.set(m.team,[]);teams.get(m.team).push(m.member); }
+  return teams;
+}
+function knownMentions() { return new Set(['all',...humanNames().keys(),...teamGroups().keys(),...(dashboardData?.members || []).flatMap(m=>[m.member,m.name || m.member])]); }
+
+function showTeam(team) { currentTeam=team;memberTabChosen=false;$('team-filter').value=team;if(dashboardData) renderMembers(dashboardData.members); }
+
+function editMember(member) {
+  const m=findMember(member);if(!m)return;
+  editingMember=m.member;
+  $('member-name').value=m.name || m.member;$('member-team').value=m.team || '';$('member-workdir').value=m.workdir || m.cwd || '';
+  $('known-teams').innerHTML=[...teamGroups().keys()].sort().map(team=>`<option value="${esc(team)}"></option>`).join('');
+  $('known-workdirs').innerHTML=[...new Set([...(dashboardData?.projects || []).map(p=>p.path),...(dashboardData?.members || []).map(m=>m.workdir || m.cwd).filter(Boolean)])].map(path=>`<option value="${esc(path)}"></option>`).join('');
+  $('member-feedback').textContent='';$('member-dialog').showModal();$('member-name').focus();
+}
+
+$('member-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=$('member-save');button.disabled=true;
+  try {
+    const response=await fetch('/api/member-profile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({member:editingMember,name:$('member-name').value,team:$('member-team').value,workdir:$('member-workdir').value})});
+    const data=await response.json();if(!response.ok || !data.ok)throw new Error(data.error || `HTTP ${response.status}`);
+    render({...dashboardData,members:dashboardData.members.map(m=>m.member===data.profile.member ? {...m,...data.profile,workdir:data.profile.workdir || m.cwd} : m)});
+    $('member-dialog').close();
+    try { const state=await fetch('/api/state',{cache:'no-store'});if(state.ok)render(await state.json()); } catch (_) {}
+  } catch(error) { $('member-feedback').textContent=error.message; }
+  finally {button.disabled=false;}
+});
 
 function openIdentity() {
   $('identity-name').value=dashboardData?.viewer?.named ? dashboardData.viewer.name : '';
@@ -523,31 +573,40 @@ function showMemberTab(tab) {
 }
 
 function renderMembers(all) {
+  const teams=[...new Set(all.map(m=>m.team).filter(Boolean))].sort();
+  if(currentTeam && !teams.includes(currentTeam))currentTeam='';
+  const teamKey=JSON.stringify(teams);
+  if($('team-filter').dataset.options!==teamKey) {$('team-filter').innerHTML='<option value="">All members</option>'+teams.map(team=>`<option value="${esc(team)}">${esc(team)}</option>`).join('');$('team-filter').dataset.options=teamKey;}
+  $('team-filter').value=currentTeam;
+  const selected=currentTeam ? all.filter(m=>m.team===currentTeam) : all;
   const counts = {working: 0, idle: 0, inactive: 0};
-  all.forEach(m => counts[m.state === "working" ? "working" : m.state === "idle" ? "idle" : "inactive"]++);
-  if (!memberTabChosen && counts.working === 0 && counts.idle > 0) currentMemberTab = "idle";
+  selected.forEach(m => counts[m.state === "working" ? "working" : m.state === "idle" ? "idle" : "inactive"]++);
+  if (!memberTabChosen && !counts[currentMemberTab] && selected.length) currentMemberTab = counts.working ? "working" : counts.idle ? "idle" : "inactive";
   for (const [key, value] of Object.entries(counts)) $(key + "-count").textContent = `(${value})`;
   document.querySelectorAll("[data-member-tab]").forEach(b => b.classList.toggle("active", b.dataset.memberTab === currentMemberTab));
-  $("m-count").textContent = `· ${all.length}`;
-  const ms = all.filter(m => currentMemberTab === "inactive" ? !["working", "idle"].includes(m.state) : m.state === currentMemberTab);
+  $("m-count").textContent = currentTeam ? `· ${selected.length} of ${all.length}` : `· ${all.length}`;
+  const ms = selected.filter(m => currentMemberTab === "inactive" ? !["working", "idle"].includes(m.state) : m.state === currentMemberTab);
   $("members").innerHTML = ms.length ? ms.map(m => {
     const live = m.state === "working" || m.state === "idle";
     const last = m.last_room;
     return `<div class="m ${esc(m.state)}" data-member-card="${esc(m.member)}">
-      <div class="top"><span class="name">${esc(m.member)}</span><span class="badge">${esc(m.state)}</span></div>
+      <div class="top"><span class="name" title="Session ${esc(m.member)}">${esc(m.name || m.member)}</span><span class="badge">${esc(m.state)}</span></div>
+      ${m.team ? `<button type="button" class="team-tag" data-team="${esc(m.team)}">@${esc(m.team)}</button>` : ''}
       <dl class="kv">
         <dt>harness</dt><dd>${esc(m.harness || "–")}</dd>
         <dt>activity</dt><dd>${ago(m.last_activity)}${m.last_tool ? " · " + esc(m.last_tool) : ""}</dd>
         <dt>worktree</dt><dd>${esc(m.cwd_short || "–")}</dd>
+        ${m.workdir && m.workdir!==m.cwd ? `<dt>next folder</dt><dd>${esc(m.workdir)}</dd>` : ''}
         <dt>branch</dt><dd>${esc(m.git_branch || "–")}</dd>
         <dt>room</dt><dd>${m.undelivered ? `<span class="unseen">${m.undelivered} waiting</span>` : "up to date"}</dd>
       </dl>
       <div class="last-room"><b>Last Room message</b> · ${last ? ago(last.ts) : "none yet"}<br>${last ? esc(last.body.slice(0, 220)) : "No message from this member in the Room tail."}</div>
       <div class="action-row">
         ${live ? `<button class="icon-button" data-terminal="${esc(m.member)}" title="Open ${esc(m.member)} terminal" aria-label="Open ${esc(m.member)} terminal"><svg aria-hidden="true"><use href="#icon-terminal"/></svg></button>` : `<button data-action="wake" data-member="${esc(m.member)}" title="Wake ${esc(m.member)}">Wake</button>`}
-        <button class="icon-button" data-copy="hive-attach ${esc(m.member)}" title="Copy attach command" aria-label="Copy attach command for ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-copy"/></svg></button>
+        <button class="icon-button" data-copy="hive-attach ${esc(m.name || m.member)}" title="Copy attach command" aria-label="Copy attach command for ${esc(m.name || m.member)}"><svg aria-hidden="true"><use href="#icon-copy"/></svg></button>
         ${live ? `<button data-action="restart" data-member="${esc(m.member)}" title="Restart ${esc(m.member)}">Restart</button><button class="icon-button" data-action="kill" data-member="${esc(m.member)}" title="Kill ${esc(m.member)}" aria-label="Kill ${esc(m.member)}"><svg aria-hidden="true"><use href="#icon-stop"/></svg></button>` : ""}
         <button class="danger" data-action="delete" data-member="${esc(m.member)}" title="Delete ${esc(m.member)}">Delete</button>
+        <button type="button" data-edit-member="${esc(m.member)}">Name &amp; team</button>
       </div>
     </div>`;
   }).join("") : `<div class="empty">No ${currentMemberTab} members.</div>`;
@@ -609,14 +668,14 @@ async function enableMentionAlerts() {
 
 function renderAttention(d) {
   const posts = [...(d.beekeeper_mentions || [])].reverse();
-  const key = JSON.stringify(posts);
+  const key = JSON.stringify([posts,(d.members || []).map(m=>[m.member,m.name])]);
   $("attention-link").hidden = posts.length === 0;
   $("attention-link").textContent = `For you · ${posts.length}`;
   $("for-you-count").textContent = `(${posts.length})`;
   document.title = posts.length ? `Hive · ${posts.length} for you` : "Hive";
   if (key !== attentionKey) {
     $("room-attention").innerHTML = posts.length ? posts.map(post => `<article class="attention-item" data-attention-gen="${post.gen}">
-      <div class="h"><b>${esc(post.member)}</b><span>${post.question ? "Question for you" : "Mentioned you"}</span><small>${ago(post.ts)} · Room #${post.gen}</small></div>
+      <div class="h"><b>${esc(memberName(post.member))}</b><span>${post.question ? "Question for you" : "Mentioned you"}</span><small>${ago(post.ts)} · Room #${post.gen}</small></div>
       <p>${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, ""))}</p>
       ${post.replied ? `<span class="replied">You replied</span>` : ""}
       <div class="action-row"><button type="button" data-reply-gen="${post.gen}">${post.question ? "Answer" : "Reply"}</button>
@@ -626,12 +685,12 @@ function renderAttention(d) {
     attentionKey = key;
   }
   const fresh = lastGen === null ? [] : posts.filter(post => post.gen > lastGen);
-  if (fresh.length) $("attention-status").textContent = `${fresh.map(post => post.member).join(", ")} mentioned you. Open For you to reply.`;
+  if (fresh.length) $("attention-status").textContent = `${fresh.map(post => memberName(post.member)).join(", ")} mentioned you. Open For you to reply.`;
   if (mentionAlerts && "Notification" in window && Notification.permission === "granted") {
     $("mention-alerts").textContent = "Disable mention alerts";
     for (const post of fresh) {
       try {
-        const notification = new Notification(`${post.member} · ${post.question ? "Question for you" : "Mention for you"}`, {
+        const notification = new Notification(`${memberName(post.member)} · ${post.question ? "Question for you" : "Mention for you"}`, {
           body: post.body.replace(/^> Reply to [^\n]*\n\n/, "").slice(0, 240), tag: `hive-room-${post.gen}`
         });
         notification.onclick = () => { window.focus(); showAttention(); startReply(post.gen); notification.close(); };
@@ -661,7 +720,7 @@ async function markRoomDone(button) {
 function renderRoom(entries, members) {
   const list = $("room");
   const humans = humanNames();
-  const key = JSON.stringify([myBeekeeper(), [...humans], entries.map(e => e.gen)]);
+  const key = JSON.stringify([myBeekeeper(), [...humans], members.map(m=>[m.member,m.name,m.team]), entries.map(e => e.gen)]);
   const identities = new Map(members.map(m => [m.member, `${m.harness || "agent"} · ${m.state}`]));
   if (key === renderedRoomKey) {
     [...list.querySelectorAll(".e")].forEach((card, index) => {
@@ -673,20 +732,20 @@ function renderRoom(entries, members) {
   }
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 2;
   const oldTop = list.scrollTop;
-  const known = new Set(["all", ...humans.keys(), ...members.map(m => m.member)]);
+  const known = knownMentions();
   const forYou = new Set((dashboardData?.beekeeper_mentions || []).map(post => post.gen));
   const fresh = lastGen === null ? 0 : entries.filter(e => e.gen > lastGen).length;
   list.innerHTML = entries.length ? entries.map(e => {
     const mine = e.member === myBeekeeper();
     const human = humans.has(e.member);
-    const name = humans.get(e.member) || e.member;
+    const name = humans.get(e.member) || memberName(e.member);
     const hue = senderHue(e.member);
     const role = mine ? "You · Beekeeper" : human ? "Beekeeper" : (identities.get(e.member) || "member");
     const initials = mine ? "YOU" : e.member.split(/[-_.]/).map(p => p[0] || "").join("").slice(0, 3).toUpperCase();
     return `<article id="room-entry-${e.gen}" class="e${mine ? " mine" : ""}${lastGen !== null && e.gen > lastGen && forYou.has(e.gen) ? " new" : ""}"
       style="--sender-hue:${hue}">
       <div class="avatar" aria-hidden="true">${esc(initials)}</div><div class="content">
-        <div class="h">${mine || human ? `<span class="who" title="${esc(e.member)}">${esc(name)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(e.member)} in Members">${esc(e.member)}</button>`}
+        <div class="h">${mine || human ? `<span class="who" title="${esc(e.member)}">${esc(name)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(name)} in Members">${esc(name)}</button>`}
           <span class="role">${esc(role)}</span><span class="when" title="${esc(e.ts || "")}">${ago(e.ts)}</span></div>
         <div class="body">${formatRoomBody(e.body, known)}</div>
         <div class="gen">Room #${e.gen} · <button type="button" class="reply-action" data-reply-gen="${e.gen}">Reply</button></div>
@@ -737,7 +796,7 @@ function render(d) {
 
   $("c-count").textContent = d.claims.length ? "· " + d.claims.length : "";
   $("claims").innerHTML = d.claims.length ? `<table>${d.claims.map(c => `
-    <tr><td class="dim">${esc(c.owner)}</td><td class="res">${esc(c.resource)}</td><td class="dim">${ago(c.created_at)}</td></tr>`).join("")}</table>`
+    <tr><td class="dim">${esc(memberName(c.owner))}</td><td class="res">${esc(c.resource)}</td><td class="dim">${ago(c.created_at)}</td></tr>`).join("")}</table>`
     : `<div class="empty">No active claims.</div>`;
 
   $("projects").innerHTML = d.projects.length ? d.projects.map(p => `
@@ -803,12 +862,16 @@ function mentionedNames(text) {
 function updateRecipients() {
   const names = mentionedNames($("room-message").value);
   const humans=humanNames();
-  const known = new Set([...humans.keys(), ...(dashboardData?.members || []).map(m => m.member)]);
+  const known = knownMentions();
   const unknown = [...names].filter(name => name !== "all" && !known.has(name));
   const preview = $("room-recipients");
   if (unknown.length) preview.innerHTML = `<span class="feedback error">Unknown member: ${unknown.map(name => `@${esc(name)}`).join(", ")}</span>`;
   else if (names.has("all")) preview.innerHTML = "Sending a prompt to <b>@all</b> members";
-  else if ([...names].some(name => !humans.has(name))) preview.innerHTML = `Sending a prompt to ${[...names].filter(name => !humans.has(name)).map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
+  else if ([...names].some(name => !humans.has(name))) {
+    const teams=teamGroups(),recipients=new Set();
+    for(const name of names) { if(teams.has(name))teams.get(name).forEach(member=>recipients.add(member));else if(findMember(name))recipients.add(findMember(name).member); }
+    preview.innerHTML=`Sending a prompt to ${[...recipients].map(member=>`<b>@${esc(memberName(member))}</b>`).join(', ')}`;
+  }
   else if (names.size) preview.textContent = [...names].map(name=>`@${name} · Beekeeper`).join(', ') + ' · Room only';
   else preview.textContent = "Room only · mention a member to send them a prompt";
 }
@@ -827,7 +890,7 @@ function updateMentionOptions() {
   const token = /(?:^|[^a-zA-Z0-9_./@-])@([a-z0-9._-]*)$/i.exec(before);
   if (!token) return hideMentionOptions();
   const humans=humanNames();
-  const names = [...new Set([...(dashboardData?.members || []).map(m => m.member), "all", ...humans.keys()])];
+  const names = [...new Set([...(dashboardData?.members || []).map(m => m.name || m.member), ...teamGroups().keys(), "all", ...humans.keys()])];
   const options = names.filter(name => name.startsWith(token[1].toLowerCase()));
   if (!options.length) return hideMentionOptions();
   const start = field.selectionStart - token[1].length - 1;
@@ -835,7 +898,7 @@ function updateMentionOptions() {
   if (mentionCompletion?.start !== start || mentionCompletion?.query !== token[1]) mentionIndex = 0;
   mentionIndex = Math.min(mentionIndex, options.length - 1);
   mentionCompletion = {start, end: field.selectionStart + tail.length, query: token[1], options};
-  $("mention-options").innerHTML = options.map((name, index) => `<button type="button" id="mention-option-${index}" role="option" aria-selected="${index === mentionIndex}" data-complete-mention="${esc(name)}">@${esc(name)}<small>${name === "all" ? "All members" : humans.has(name) ? esc(`Beekeeper · ${humans.get(name)}`) : esc(dashboardData?.members.find(m => m.member === name)?.state || "member")}</small></button>`).join("");
+  $("mention-options").innerHTML = options.map((name, index) => `<button type="button" id="mention-option-${index}" role="option" aria-selected="${index === mentionIndex}" data-complete-mention="${esc(name)}">@${esc(name)}<small>${name === "all" ? "All members" : humans.has(name) ? esc(`Beekeeper · ${humans.get(name)}`) : teamGroups().has(name) ? `Team · ${teamGroups().get(name).length} members` : esc(findMember(name)?.state || "member")}</small></button>`).join("");
   $("mention-options").hidden = false;
   field.setAttribute("aria-expanded", "true");
   field.setAttribute("aria-activedescendant", `mention-option-${mentionIndex}`);
@@ -863,8 +926,10 @@ function insertMention(name) {
 }
 
 function focusMember(name) {
-  const member = dashboardData?.members.find(m => m.member === name);
+  const member = findMember(name);
   if (!member) return;
+  name=member.member;
+  if(currentTeam && member.team!==currentTeam)showTeam('');
   showTab("overview");
   showMemberTab(["working", "idle"].includes(member.state) ? member.state : "inactive");
   [...document.querySelectorAll("[data-member-card]")].find(card => card.dataset.memberCard === name)?.scrollIntoView({behavior: "smooth", block: "center"});
@@ -880,10 +945,11 @@ function startReply(gen) {
     excerpt = (boundary > 320 ? prefix.slice(0, boundary) : prefix) + "…";
   }
   replyTo = {gen: post.gen, member: post.member, excerpt};
-  $("reply-context").innerHTML = `<b>Replying to ${esc(post.member)} · Room #${post.gen}</b><span class="reply-excerpt">${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " "))}</span>`;
+  $("reply-context").innerHTML = `<b>Replying to ${esc(memberName(post.member))} · Room #${post.gen}</b><span class="reply-excerpt">${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " "))}</span>`;
   $("reply-draft").hidden = false;
   $("room-message").maxLength = 12000 - `> Reply to ${post.member} · Room #${post.gen}: ${excerpt}\n\n`.length;
-  if (post.member !== myBeekeeper() && !mentionedNames($("room-message").value).has(post.member)) insertMention(post.member);
+  const recipient=memberName(post.member);
+  if (post.member !== myBeekeeper() && ![...mentionedNames($("room-message").value)].some(name=>name===post.member || name===recipient)) insertMention(recipient);
   $("room-message").focus();
 }
 
@@ -917,9 +983,9 @@ async function sendRoomMessage() {
     const failures = Object.entries(data.failed || {});
     const unconfirmed = Object.keys(data.unconfirmed || {});
     feedback.classList.toggle("error", failures.length > 0);
-    feedback.textContent = `Posted to Room${data.sent.length ? ` and submitted to ${data.sent.join(", ")}` : ""}.`;
-    if (unconfirmed.length) feedback.textContent += ` Submission unconfirmed: ${unconfirmed.join(", ")}. Check the member terminal before resending.`;
-    if (failures.length) feedback.textContent += ` Delivery failed: ${failures.map(([name, reason]) => `${name} (${reason})`).join(", ")}`;
+    feedback.textContent = `Posted to Room${data.sent.length ? ` and submitted to ${data.sent.map(memberName).join(", ")}` : ""}.`;
+    if (unconfirmed.length) feedback.textContent += ` Submission unconfirmed: ${unconfirmed.map(memberName).join(", ")}. Check the member terminal before resending.`;
+    if (failures.length) feedback.textContent += ` Delivery failed: ${failures.map(([name, reason]) => `${memberName(name)} (${reason})`).join(", ")}`;
     try {
       const next = await fetch("/api/state", {cache: "no-store"});
       if (next.ok) render(await next.json());
@@ -937,6 +1003,8 @@ document.addEventListener("click", async e => {
   if (!b) return;
   if (b.dataset.tab) return showTab(b.dataset.tab);
   if (b.dataset.memberTab) return showMemberTab(b.dataset.memberTab);
+  if (b.dataset.team !== undefined) return showTeam(b.dataset.team);
+  if (b.dataset.editMember) return editMember(b.dataset.editMember);
   if (b.dataset.roomTab) return showRoomTab(b.dataset.roomTab);
   if (b.dataset.roomDone) return markRoomDone(b);
   if (b.dataset.completeMention) return completeMention(b.dataset.completeMention);
@@ -1094,7 +1162,7 @@ function zoomTerminal(delta) {
 
 function openTerminal(member) {
   activeMember = member;
-  $("term-member-name").textContent = member || "Host shell (hive user)";
+  $("term-member-name").textContent = member ? memberName(member) : "Host shell (hive user)";
   $("term-badge").textContent = member ? "MEMBER" : "SHELL";
   $("term-steer-input").placeholder = member ? `Send a prompt as ${dashboardData?.viewer?.name || 'beekeeper'}…` : "Run a shell command…";
   $("term-steer-input").value = "";

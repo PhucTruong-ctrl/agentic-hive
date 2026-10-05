@@ -152,6 +152,20 @@ session_header() {
     notes_line="working notes: $nest/notes (review after resume or compaction)"$'\n'
   fi
   printf 'HIVE\nmember: %s\nnest: %s\n%s%s\nRe-anchor on latest Beekeeper intent/current project direction after resume or compaction: solution open -> EXPLORE; solution selected -> COMMIT.\n' "$m" "$nest" "$notes_line" "$claims"
+  profile_hint 1
+}
+
+profile_hint() {
+  local file="$nest/state/profile.json" marker="$nest/state/last-profile-context" value name team
+  [[ -f $file ]] || return 0
+  value=$(jq -c '{name,team,workdir}' "$file" 2>/dev/null) || return 0
+  [[ ${1:-0} == 1 || $(cat "$marker" 2>/dev/null) != "$value" ]] || return 0
+  name=$(jq -r '.name // empty' <<<"$value"); name=${name:-$m}
+  team=$(jq -r '.team // empty' <<<"$value")
+  printf 'HIVE member name: %s (session identity %s)' "$name" "$m"
+  [[ -z $team ]] || printf '; team: @%s' "$team"
+  printf '. One shared Room; @team tags prompt that team, @all prompts other members. Use /run/current-system/sw/bin/hive on NixOS for current name/team routing. Use your current project/worktree; a saved working folder takes effect on wake/restart.\n'
+  printf '%s\n' "$value" >"$marker" 2>/dev/null || true
 }
 
 # Codex writes rate limits into its session log (token_count events). Copy the
@@ -228,12 +242,13 @@ case $event in
     telemetry working
     deliver "$(
       core_hint
+      profile_hint
       quiet_nudge
     )"
     ;;
   PostToolUse)
     telemetry working
-    deliver ""
+    deliver "$(profile_hint)"
     [[ $harness == codex ]] && codex_quota
     ;;
   Stop)

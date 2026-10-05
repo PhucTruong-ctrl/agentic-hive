@@ -28,6 +28,7 @@ import shutil
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import threading
 import time
@@ -48,6 +49,8 @@ MEMBER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 WEB_MEMBER = "beekeeper"
 BIN_DIR = Path(__file__).resolve().parent
 BEEKEEPER_LOCK = threading.Lock()
+sys.path.insert(0, str(SHARE if (SHARE / "hive_members.py").is_file() else BIN_DIR.parent / "share"))
+import hive_members
 
 
 def is_beekeeper(member):
@@ -413,6 +416,7 @@ def members(generation, now, room_entries):
     for entry in reversed(room_entries):
         last_posts.setdefault(entry["member"], entry)
     mdir = HIVE_ROOT / "members"
+    profiles = {profile["member"]: profile for profile in hive_members.profiles(HIVE_ROOT)}
     for d in sorted(p for p in mdir.iterdir() if p.is_dir()) if mdir.is_dir() else []:
         name = d.name
         if is_beekeeper(name):
@@ -438,8 +442,12 @@ def members(generation, now, room_entries):
         cursor = read(d / "state/last-delivered-generation", "0")
         cursor = int(cursor) if cursor.isdigit() else 0
         cwd = t.get("cwd") or ""
+        profile = profiles.get(name, {"name": name, "team": None, "workdir": None})
         out.append({
             "member": name,
+            "name": profile["name"],
+            "team": profile["team"],
+            "workdir": profile["workdir"] or launch.get("dir") or cwd or str(HIVE_ROOT / "projects"),
             "state": state,
             "harness": harness or None,
             "pid": live_pid or t.get("pid"),
@@ -587,6 +595,7 @@ def state(viewer=None):
         "beekeeper_mentions": beekeeper_mentions(all_room, viewer=viewer["member"] if viewer else WEB_MEMBER),
         "viewer": viewer,
         "beekeepers": beekeeper_profiles(),
+        "teams": {team: [m["member"] for m in ms if m["team"] == team] for team in sorted({m["team"] for m in ms if m["team"]})},
         "projects": cached_git_projects([m["cwd"] for m in ms]),
     }
 
@@ -803,7 +812,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "not found\n", "text/plain")
 
     def do_POST(self):
-        if self.path in ("/api/steer", "/api/member", "/api/room", "/api/room-done", "/api/identity"):
+        if self.path in ("/api/steer", "/api/member", "/api/room", "/api/room-done", "/api/identity", "/api/member-profile"):
             if not self._same_origin():
                 self._send(403, json.dumps({"ok": False, "error": "cross-origin request denied"}), "application/json")
                 return
@@ -811,6 +820,16 @@ class Handler(BaseHTTPRequestHandler):
                 req = self._json_request()
                 viewer = browser_beekeeper(self.headers)
                 actor_member = viewer["member"]
+                if self.path == "/api/member-profile":
+                    member = req.get("member")
+                    if not isinstance(member, str) or not MEMBER_RE.fullmatch(member) or is_beekeeper(member):
+                        raise ValueError("known agent member required")
+                    for key in ("name", "team", "workdir"):
+                        if key in req and not isinstance(req[key], str):
+                            raise ValueError(f"{key} must be text")
+                    profile = hive_members.update(HIVE_ROOT, member, name=req.get("name"), team=req.get("team"), workdir=req.get("workdir"))
+                    self._send(200, json.dumps({"ok": True, "profile": profile}), "application/json")
+                    return
                 if self.path == "/api/identity":
                     name = req.get("name")
                     if isinstance(name, str):
@@ -838,8 +857,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self.path == "/api/member":
                     member = req.get("member", "")
                     action = req.get("action", "")
-                    if not MEMBER_RE.fullmatch(member) or not (HIVE_ROOT / "members" / member).is_dir() or is_beekeeper(member):
+                    if not MEMBER_RE.fullmatch(member) or is_beekeeper(member):
                         raise ValueError("known member required")
+                    member = hive_members.resolve(HIVE_ROOT, member)
                     commands = {
                         "wake": ("wake", member, "--no-attach"),
                         "restart": ("restart", member, "--force", "--no-attach"),
@@ -862,8 +882,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 member = req.get("member", "")
                 prompt = req.get("prompt", "")
-                if not MEMBER_RE.fullmatch(member) or is_beekeeper(member) or not (HIVE_ROOT / "members" / member).is_dir():
+                if not MEMBER_RE.fullmatch(member) or is_beekeeper(member):
                     raise ValueError("valid member name required")
+                member = hive_members.resolve(HIVE_ROOT, member)
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
                     raise ValueError("prompt must be 1–12000 characters")
 
@@ -892,7 +913,9 @@ class Handler(BaseHTTPRequestHandler):
         else:
             member = qs.get("member", [""])[0]
             mode = qs.get("mode", ["steer"])[0]
-            if not MEMBER_RE.fullmatch(member) or is_beekeeper(member) or not (HIVE_ROOT / "members" / member).is_dir():
+            try:
+                member = hive_members.resolve(HIVE_ROOT, member)
+            except ValueError:
                 self._send(400, "unknown member\n", "text/plain")
                 return
             if mode not in ("watch", "steer"):

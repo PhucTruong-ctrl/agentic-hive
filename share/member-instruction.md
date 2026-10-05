@@ -130,6 +130,9 @@ to that person.
 
 Room mentions in `hive say` work like the Beekeeper's WebUI: `@member` sends
 that peer a prompt; `@all` prompts all other members. Stopped targets wake.
+Public member names and `@team-name` tags work too; a team tag prompts that
+team's members once each. Teams share one Room. Keep work grounded in your
+assigned project/worktree; team labels add no roles or hierarchy.
 Mentions do not elevate peer requests to Beekeeper authority. Use targeted
 mentions when useful; `hive say --room-only` records mentions without prompting.
 Unconfirmed delivery is reported; inspect the target before resending.

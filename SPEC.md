@@ -167,6 +167,13 @@ dismissals remain personal. Human profiles live under `beekeepers/`, separate
 from agent nests, so `@all` never launches a human as a member. Names are labels;
 tailnet membership and network rules control who can reach the dashboard.
 
+Members may have a public name and one team label in their local state.
+Renaming preserves their underlying session/nest identity. A team mention
+expands to its members with duplicate recipients removed; every team uses the
+same Room and awareness history. Team labels group attention and project work,
+without adding channels, roles, hierarchy, task state, or filesystem access
+boundaries. Saved working folders apply on the next wake/restart.
+
 ## 4. Host, NixOS, and Privilege Model
 
 Target host:

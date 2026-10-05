@@ -13,6 +13,9 @@
 #   hive-member delete <member> [--force]
 #                                         remove its session, claims, nest and telemetry
 #   hive-member send <member> <message> wake if needed and start work
+#   hive-member rename <member> <name>  change its public name, preserving session
+#   hive-member team <member> <team>    assign a team tag (empty string clears)
+#   hive-member configure <member> [--name <name>] [--team <team>] [--dir <dir>]
 #
 # Harness, directory and conversation come from the member's launch record
 # (members/<m>/state/launch.json, written by hive-launch) and telemetry.
@@ -20,6 +23,8 @@ set -euo pipefail
 
 HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
 HIVE_USER="${HIVE_USER:-hive}"
+MEMBER_HELPER="${HIVE_SHARE:-$(dirname "$(readlink -f "$0")")/../share/agentic-hive}/hive_members.py"
+[[ -f $MEMBER_HELPER ]] || MEMBER_HELPER="$(dirname "$(readlink -f "$0")")/../share/hive_members.py"
 die() { printf 'hive-member: %s\n' "$*" >&2; exit 1; }
 say() { printf 'hive-member: %s\n' "$*"; }
 
@@ -28,7 +33,7 @@ if [[ $(id -un) != "$HIVE_USER" ]]; then
 fi
 unset TMUX
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; }
 
 tele() { jq -r "$2 // empty" "$HIVE_ROOT/telemetry/members/$1.json" 2>/dev/null || true; }
 launch() { jq -r "$2 // empty" "$HIVE_ROOT/members/$1/state/launch.json" 2>/dev/null || true; }
@@ -89,12 +94,13 @@ mark_ended() {
 }
 
 cmd_status() {
-  local m
-  for m in $(ls "$HIVE_ROOT/members"); do
-    [[ $m != beekeeper ]] || continue
+  local m name team
+  while IFS=$'\t' read -r m name team; do
     [[ -z ${1:-} || $m == "$1" ]] || continue
-    printf '%-24s %-24s %-7s %s\n' "$m" "$(state "$m")" "$(tele "$m" .harness || true)" "$(tele "$m" .session_id)"
-  done
+    [[ $name == "$m" ]] || name="$name ($m)"
+    [[ -z $team ]] || name="$name @$team"
+    printf '%-24s %-24s %-7s %s\n' "$name" "$(state "$m")" "$(tele "$m" .harness || true)" "$(tele "$m" .session_id)"
+  done < <(python3 "$MEMBER_HELPER" list | jq -r '.members[] | [.member, .name, (.team // "")] | @tsv')
 }
 
 cmd_kill() {
@@ -113,6 +119,8 @@ cmd_kill() {
 
 cmd_delete() {
   local m="$1" force="$2" d owner
+  exec 8>>"$HIVE_ROOT/.members.lock"
+  flock 8
   [[ $m != beekeeper ]] || die "cannot delete the Beekeeper's Room identity"
   if harness_alive "$m" && ((!force)); then
     die "$m has a running agent; use --force to delete it"
@@ -234,7 +242,8 @@ cmd_wake() (
   has_session "$m" && tmux kill-session -t "=hive-$m"
 
   harness=$(launch "$m" .harness); harness=${harness:-$(tele "$m" .harness)}; harness=${harness:-claude}
-  dir=$(launch "$m" .dir); dir=${dir:-$(tele "$m" .cwd)}; dir=${dir:-$HIVE_ROOT/projects}
+  dir=$(jq -r '.workdir // empty' "$HIVE_ROOT/members/$m/state/profile.json" 2>/dev/null || true)
+  dir=${dir:-$(launch "$m" .dir)}; dir=${dir:-$(tele "$m" .cwd)}; dir=${dir:-$HIVE_ROOT/projects}
   [[ -d $dir ]] || die "directory $dir no longer exists"
   sid=$(tele "$m" .session_id)
 
@@ -264,6 +273,15 @@ attach() {
 }
 
 verb="${1:-}"; (($#)) && shift
+if [[ $verb == rename || $verb == team || $verb == configure ]]; then
+  target="${1:-}"; (($#)) && shift
+  if [[ $verb == rename || $verb == team ]]; then
+    [[ $# == 1 ]] || die "usage: hive-member $verb <member> <value>"
+    option=--name; [[ $verb != team ]] || option=--team
+    exec python3 "$MEMBER_HELPER" update "$target" "$option" "$1"
+  fi
+  exec python3 "$MEMBER_HELPER" update "$target" "$@"
+fi
 member="" force=0 fresh=0 message="" no_attach=0
 if [[ $verb == send ]]; then
   member="${1:-}"; (($#)) && shift
@@ -281,6 +299,10 @@ else
       *) [[ -z $member ]] || die "only one member may be specified"; member="$1"; shift ;;
     esac
   done
+fi
+
+if [[ -n $member && $member != beekeeper && ! -f $HIVE_ROOT/beekeepers/$member/state/beekeeper.json ]]; then
+  member=$(python3 "$MEMBER_HELPER" resolve "$member") || exit 1
 fi
 
 case $verb in

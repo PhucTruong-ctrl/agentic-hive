@@ -80,6 +80,9 @@ dir="$HIVE_ROOT/projects"
 [[ -d $dir ]] || die "no such directory: $dir"
 dir=$(readlink -f "$dir")
 
+# A public rename keeps the running environment and nest identity stable.
+if resolved=$(hive _resolve "$member" 2>/dev/null); then member=$resolved; fi
+[[ $member != beekeeper && ! -f $HIVE_ROOT/beekeepers/$member/state/beekeeper.json ]] || die "cannot launch a human Beekeeper identity"
 hive join "$member" >/dev/null
 session="hive-$member"
 

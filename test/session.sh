@@ -70,6 +70,14 @@ fi
 rg -q 'unconfirmed' "$tmp/error"
 printf 'unconfirmed cold wake reported\n'
 
+mkdir -p "$HIVE_ROOT/projects/poke"
+"$repo/bin/hive-member" configure bob --name cedar --team poke --dir "$HIVE_ROOT/projects/poke" >/dev/null
+: >"$HIVE_TEST_LOG"
+"$repo/bin/hive-member" send cedar 'continue in the saved folder' >/dev/null
+rg -q '^launch bob codex '"$HIVE_ROOT"'/projects/poke -- resume test-session continue in the saved folder$' "$HIVE_TEST_LOG"
+[[ ! -d $HIVE_ROOT/members/cedar ]]
+printf 'renamed member wakes its original conversation in the selected project folder\n'
+
 : >"$HIVE_TEST_LOG"
 printf '%s\n' '{"harness":"bash","dir":"/tmp"}' >"$HIVE_ROOT/members/bob/state/launch.json"
 printf '%s\n' '{"pid":99999,"harness":"bash","status":"idle"}' >"$HIVE_ROOT/telemetry/members/bob.json"

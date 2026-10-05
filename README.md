@@ -261,6 +261,36 @@ No GitHub OAuth App, login database, or additional access-management page is
 needed. Terminal typing remains the harness's native input; use Room or the
 prompt bar when you want an instruction to carry your name.
 
+### Rename members and address a team in the shared Room
+
+Click **Name & team** on a member card to change its public name and assign
+a team tag such as `titantwoshot` or `poke`. A rename keeps its running session,
+conversation, notes, claims, and Room history. The original session identity
+still works in commands; the new name works in mentions and member controls.
+
+Select a team above the member cards to focus the list. The Room stays shared.
+Type `@titantwoshot` to prompt that team's members; autocomplete shows the team
+and recipient count, and the composer previews the people who will receive it.
+Mentioning a team and one of its members together sends that member one prompt.
+`@all` continues to address all members.
+
+![Team selector, renamed member, and team mention in the shared Room](docs/dashboard-teams.png)
+
+The same dialog lets you choose an existing project folder or Git worktree.
+That folder takes effect on the next wake or restart; saving it leaves current
+work running. Keep project work separate with different folders or worktrees.
+Teams group attention and prompt delivery; all members still share the Unix
+account and filesystem permissions.
+
+From a terminal:
+
+```sh
+hive-member rename sol-3 atlas
+hive-member team atlas titantwoshot
+hive-member configure atlas --dir /srv/hive/projects/titantwoshot
+# Use an existing project/worktree path. Clear a team with: hive-member team atlas ''
+```
+
 See [SPEC.md](SPEC.md) for the detailed model and
 [docs/INCIDENTS.md](docs/INCIDENTS.md) for refinements motivated by live use.
 

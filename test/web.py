@@ -182,6 +182,107 @@ if [[ $2 == ${HIVE_TEST_UNCONFIRMED_MEMBER:-} ]]; then echo 'submission unconfir
         self.assertEqual(status, 200)
         run.assert_called_once_with("hive-member", "send", "alice", "do work")
 
+    def test_member_rename_preserves_nest_launch_conversation_and_room_history(self):
+        state = self.root / "members/alice/state"
+        state.mkdir()
+        launch = state / "launch.json"
+        launch.write_text(json.dumps({"harness": "codex", "dir": str(self.root / "projects")}))
+        telemetry = self.root / "telemetry/members/alice.json"
+        telemetry.write_text(json.dumps({"session_id": "ongoing-conversation", "cwd": str(self.root / "projects")}))
+        web.run_hive("hive", "say", "Original discovery", member="alice")
+        history = (self.root / "ROOM.md").read_bytes()
+        with patch.object(web, "run_hive") as run:
+            status, result = self.request("/api/member-profile", {"member": "alice", "name": " Atlas ", "team": "titantwoshot"})
+        self.assertEqual(status, 200)
+        run.assert_not_called()  # Editing names never sends keystrokes or restarts.
+        self.assertEqual(result["profile"]["member"], "alice")
+        self.assertEqual(result["profile"]["name"], "atlas")
+        self.assertTrue((self.root / "members/alice").is_dir())
+        self.assertFalse((self.root / "members/atlas").exists())
+        self.assertEqual(json.loads(telemetry.read_text())["session_id"], "ongoing-conversation")
+        self.assertEqual(json.loads(launch.read_text())["harness"], "codex")
+        self.assertEqual((self.root / "ROOM.md").read_bytes(), history)
+        _, snapshot = self.get_json("/api/state")
+        member = next(m for m in snapshot["members"] if m["member"] == "alice")
+        self.assertEqual((member["name"], member["team"]), ("atlas", "titantwoshot"))
+        self.assertEqual(snapshot["teams"], {"titantwoshot": ["alice"]})
+        text = web.run_hive("hive", "room", "--last", "1")
+        self.assertIn("atlas (alice) @titantwoshot", text)
+
+    def test_team_mentions_expand_aliases_once_in_the_shared_room(self):
+        self.request("/api/member-profile", {"member": "alice", "name": "atlas", "team": "titantwoshot"})
+        self.request("/api/member-profile", {"member": "bob", "name": "cedar", "team": "titantwoshot"})
+        web.run_hive("hive", "join", "carol")
+        self.request("/api/member-profile", {"member": "carol", "team": "poke"})
+        status, data = self.request("/api/room", {"message": "@titantwoshot @atlas @alice review this"})
+        self.assertEqual(status, 200)
+        self.assertEqual(data["sent"], ["alice", "bob"])
+        self.assertEqual(sorted((self.root / "sent-targets").read_text().splitlines()), ["alice", "bob"])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "1")
+        self.assertIn("@titantwoshot @atlas @alice", web.room()[0]["body"])
+        self.assertFalse((self.root / "teams").exists())
+        data = json.loads(web.run_hive("hive", "say", "--json", "@titantwoshot @atlas @carol peers check this", member="alice"))
+        self.assertEqual(data["sent"], ["bob", "carol"])
+
+    def test_aliases_route_prompts_lifecycle_and_terminals_to_existing_sessions(self):
+        self.request("/api/member-profile", {"member": "alice", "name": "atlas"})
+        with patch.object(web, "run_hive", return_value="ok") as run:
+            self.assertEqual(self.request("/api/steer", {"member": "atlas", "prompt": "check source"})[0], 200)
+            run.assert_called_with("hive-member", "send", "alice", "check source")
+            self.assertEqual(self.request("/api/member", {"member": "atlas", "action": "wake"})[0], 200)
+            run.assert_called_with("hive-member", "wake", "alice", "--no-attach")
+        data = json.loads(web.run_hive("hive", "say", "--json", "@atlas review", member="bob"))
+        self.assertEqual(data["sent"], ["alice"])
+        handler = object.__new__(web.Handler)
+        handler.headers = {"Upgrade": "websocket", "Origin": "http://hive.local", "Host": "hive.local", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="}
+        handler.request = object()
+        handler.send_response = handler.send_header = handler.end_headers = lambda *args: None
+        with patch.object(web, "TerminalBridge") as bridge:
+            bridge.return_value.running = False
+            handler.handle_websocket(web.urlparse("/ws/terminal?member=atlas&mode=watch"))
+            self.assertEqual(bridge.call_args.args[3], "=hive-alice")
+
+    def test_member_and_team_namespace_collisions_fail_without_partial_edit(self):
+        self.request("/api/member-profile", {"member": "alice", "name": "atlas", "team": "titantwoshot"})
+        before = (self.root / "members/alice/state/profile.json").read_bytes()
+        for values in ({"name": "bob"}, {"name": "all"}, {"name": "beekeeper-mina"},
+                       {"name": "titantwoshot"}, {"team": "atlas"}, {"name": "new", "team": "bob"},
+                       {"name": "../outside"}, {"name": "atlas."}, {"name": None}, {"team": True}, {"workdir": 3},
+                       {"name": "new", "workdir": str(self.root / "missing")}, {"workdir": "relative"}):
+            self.assertEqual(self.request("/api/member-profile", {"member": "alice", **values})[0], 400, values)
+            self.assertEqual((self.root / "members/alice/state/profile.json").read_bytes(), before)
+        self.assertEqual(self.request("/api/member-profile", {"member": "bob", "name": "atlas"})[0], 400)
+        self.assertEqual(self.request("/api/member-profile", {"member": "beekeeper", "name": "owner"})[0], 400)
+        self.assertEqual(self.request("/api/member-profile", {"member": "bob", "team": "poke"}, "http://other.site")[0], 403)
+        with self.assertRaises(RuntimeError):
+            web.run_hive("hive", "join", "atlas")
+        with self.assertRaises(RuntimeError):
+            web.run_hive("hive", "join", "titantwoshot")
+
+    def test_leaving_a_team_removes_its_tag_and_unknown_tags_never_post(self):
+        self.request("/api/member-profile", {"member": "alice", "team": "poke"})
+        self.request("/api/member-profile", {"member": "alice", "team": ""})
+        self.assertEqual(self.get_json("/api/state")[1]["teams"], {})
+        self.assertEqual(self.request("/api/room", {"message": "@poke do this"})[0], 400)
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "0")
+        self.request("/api/member-profile", {"member": "alice", "name": "atlas", "team": "poke", "workdir": str(self.root / "projects")})
+        profile = web.hive_members.index(self.root)
+        self.assertEqual(profile["teams"], {"poke": ["alice"]})
+        self.assertEqual(profile["members"][0]["workdir"], str(self.root / "projects"))
+
+    def test_live_member_learns_its_new_name_and_team_once_without_room_noise(self):
+        self.request("/api/member-profile", {"member": "alice", "name": "atlas", "team": "titantwoshot"})
+        hook = source.parent / "hive-hook"
+        env = dict(os.environ, HIVE_ROOT=str(self.root), HIVE_MEMBER="alice")
+        def boundary():
+            return subprocess.run([str(hook), "claude", "PostToolUse"], input=json.dumps({"cwd": str(self.root)}),
+                                  text=True, capture_output=True, env=env, check=True).stdout
+        context = json.loads(boundary())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("HIVE member name: atlas (session identity alice)", context)
+        self.assertIn("team: @titantwoshot", context)
+        self.assertEqual(boundary(), "")
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "0")
+
     def test_named_beekeeper_posts_and_prompts_keep_the_requester(self):
         self.assertEqual(self.request("/api/identity", {"name": " TCTinh "})[0], 200)
         status, data = self.request("/api/room", {"message": "@all review source", "member": "someone-else"}, cookie="hive_beekeeper=tctinh")
