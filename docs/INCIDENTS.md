@@ -75,3 +75,32 @@ Evidence: an isolated real Codex accepted idle input in 2621ms and busy input in
 once. Regression checks cover swallowed Enter, an unchanged composer, missing
 receipts, dialogs, and concurrent submissions. Production member sessions were
 not changed.
+
+## 2026-10-05 — packaged Room posting cannot find Python
+
+Observed after activating member names and teams: WebUI Send failed at
+`python3: command not found` in the packaged `hive` command. Python was a build
+input and the WebUI's patched interpreter, but was absent from the shell
+commands' runtime PATH. Checks inherited the host PATH and missed the omission.
+
+Change: include Python in the package wrappers. Every package build now checks
+joining, renaming, team mentions, posting, Room rendering, hooks, member status,
+and the WebUI snapshot with an empty host PATH and an isolated Hive root. This
+check reproduces the failure against the previous package and passes with the
+fix.
+
+## 2026-10-05 — multiline input is pasted but never submitted
+
+Observed in an isolated real Codex session: a two-line message remained in the
+editable input and delivery timed out without sending Enter. The submission
+guard compared 32 characters from the message against the first visible input
+line. A newline or a narrow terminal can end that line before 32 characters.
+
+Change: compare the visible line as a literal prefix of the submitted message.
+Keep the cursor-based composer check, dialog protection, matching hook receipt,
+and accepted-input detection. Do not repaste or send Enter into transcript text.
+
+Evidence: regression tests reproduce the old failure and verify one paste and
+one Enter for multiline and narrow input. The real Codex session submitted and
+answered multiline, long wrapped, and 28-column messages with the fix, including
+input queued during a running turn. Production member sessions were unchanged.

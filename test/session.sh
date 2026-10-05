@@ -18,9 +18,19 @@ if [[ $1 == list-panes ]]; then [[ ${HIVE_TEST_LIVE:-0} == 1 ]] && printf '%s\n'
 printf 'tmux %s\n' "$*" >>"$HIVE_TEST_LOG"
 case $1 in
   load-buffer) cat >"$HIVE_ROOT/pending-prompt"; echo 0 >"$HIVE_ROOT/enters"; rm -f "$HIVE_ROOT/queued-prompt" "$HIVE_ROOT/ack-ticks" ;;
-  display-message) echo 1 ;;
+  display-message)
+    if [[ -f $HIVE_ROOT/pending-prompt && ( ${HIVE_TEST_MULTILINE:-0} == 1 || ${HIVE_TEST_WRAP:-0} == 1 ) ]]; then echo 2
+    else echo 1; fi
+    ;;
   capture-pane)
     if [[ -f $HIVE_ROOT/queued-prompt ]]; then printf '› Ask Codex to do anything\n› Ask Codex to do anything\n'; exit; fi
+    if [[ -f $HIVE_ROOT/pending-prompt && ( ${HIVE_TEST_MULTILINE:-0} == 1 || ${HIVE_TEST_WRAP:-0} == 1 ) ]]; then
+      prompt=$(cat "$HIVE_ROOT/pending-prompt")
+      printf 'Previous transcript output\n'
+      if [[ ${HIVE_TEST_MULTILINE:-0} == 1 ]]; then printf '› %s\n  %s\n' "${prompt%%$'\n'*}" "${prompt#*$'\n'}"
+      else printf '› %s\n  %s\n' "${prompt:0:20}" "${prompt:20}"; fi
+      exit
+    fi
     printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"
     if [[ ${HIVE_TEST_DIALOG:-0} == 1 && -f $HIVE_ROOT/pending-prompt ]]; then echo 'Permission required'
     else printf '› %s\n' "$(cat "$HIVE_ROOT/pending-prompt" 2>/dev/null || true)"; fi
@@ -92,6 +102,18 @@ printf 'live member submission confirmed by hook\n'
 HIVE_TEST_LIVE=1 HIVE_TEST_DROP_ENTER=1 "$repo/bin/hive-member" send bob 'retry the swallowed Enter' >/dev/null
 [[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 2 ]]
 printf 'swallowed Enter retried without duplicate paste\n'
+
+: >"$HIVE_TEST_LOG"
+rm -f "$HIVE_ROOT/pending-prompt"
+HIVE_TEST_LIVE=1 HIVE_TEST_MULTILINE=1 "$repo/bin/hive-member" send bob $'DELIVERY_MULTILINE\nPlease submit both lines.' >/dev/null
+[[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 1 ]]
+printf 'multiline prompt is submitted after paste\n'
+
+: >"$HIVE_TEST_LOG"
+rm -f "$HIVE_ROOT/pending-prompt"
+HIVE_TEST_LIVE=1 HIVE_TEST_WRAP=1 "$repo/bin/hive-member" send bob 'DELIVERY_WRAP a message wrapped in a narrow terminal' >/dev/null
+[[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 1 ]]
+printf 'narrow terminal prompt is submitted after paste\n'
 
 : >"$HIVE_TEST_LOG"
 HIVE_TEST_LIVE=1 HIVE_TEST_ACK_DELAY_N=9999 "$repo/bin/hive-member" send bob 'accepted now; hook arrives later' >"$tmp/out"

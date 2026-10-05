@@ -42,6 +42,7 @@ stdenvNoCC.mkDerivation {
       wrapProgram "$f" \
         --prefix PATH : "$out/bin:${
           lib.makeBinPath [
+            python3
             coreutils
             util-linux
             gnused
@@ -56,6 +57,13 @@ stdenvNoCC.mkDerivation {
         --set HIVE_SHARE "$out/share/agentic-hive"
     done
     runHook postInstall
+  '';
+
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    ${bash}/bin/bash ${../test/package.sh} "$out/bin"
+    runHook postInstallCheck
   '';
 
   meta = {

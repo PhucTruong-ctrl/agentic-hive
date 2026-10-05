@@ -384,6 +384,9 @@ the dashboard's network exposure before using Hive on sensitive projects.
 
 ## Test
 
+The Nix package build also checks its commands with an empty host PATH so host
+tools cannot hide missing runtime dependencies.
+
 ```sh
 nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/package.nix {}'
 bash test/smoke.sh
