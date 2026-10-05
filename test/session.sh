@@ -67,7 +67,7 @@ printf 'cold wake delivered initial prompt\n'
 if HIVE_TEST_NO_ACK=1 "$repo/bin/hive-member" send bob 'a cold wake without acknowledgement' >"$tmp/out" 2>"$tmp/error"; then
   echo 'unconfirmed cold wake unexpectedly succeeded' >&2; exit 1
 fi
-rg -q 'not confirmed' "$tmp/error"
+rg -q 'unconfirmed' "$tmp/error"
 printf 'unconfirmed cold wake reported\n'
 
 : >"$HIVE_TEST_LOG"
@@ -86,20 +86,33 @@ HIVE_TEST_LIVE=1 HIVE_TEST_DROP_ENTER=1 "$repo/bin/hive-member" send bob 'retry 
 printf 'swallowed Enter retried without duplicate paste\n'
 
 : >"$HIVE_TEST_LOG"
-HIVE_TEST_LIVE=1 HIVE_TEST_ACK_DELAY_N=32 "$repo/bin/hive-member" send bob 'accepted now; hook arrives later' >"$tmp/out"
+HIVE_TEST_LIVE=1 HIVE_TEST_ACK_DELAY_N=9999 "$repo/bin/hive-member" send bob 'accepted now; hook arrives later' >"$tmp/out"
 [[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 && $(rg -c '^tmux send-keys' "$HIVE_TEST_LOG") == 1 ]]
-rg -q 'submission confirmed' "$tmp/out"
+rg -q 'accepted by harness; processing receipt pending' "$tmp/out"
+[[ $(cat "$HIVE_ROOT/ack-ticks") -lt 10 ]]
 if rg -q 'already running' "$tmp/out"; then echo 'send result includes irrelevant running state' >&2; exit 1; fi
-printf 'delayed receipt confirmed without resubmitting accepted input\n'
+printf 'accepted queued input returns promptly without waiting for a hook or resubmitting\n'
 rm -f "$HIVE_ROOT/queued-prompt" "$HIVE_ROOT/ack-ticks"
+
+: >"$HIVE_TEST_LOG"
+if HIVE_TEST_LIVE=1 HIVE_TEST_NO_ACK=1 "$repo/bin/hive-member" send bob 'Enter has not been accepted' >"$tmp/out" 2>"$tmp/error"; then
+  echo 'unchanged composer unexpectedly confirmed submission' >&2; exit 1
+else
+  [[ $? == 2 ]]
+fi
+[[ $(rg -c '^tmux load-buffer' "$HIVE_TEST_LOG") == 1 ]]
+rg -q 'unconfirmed' "$tmp/error"
+printf 'unchanged composer is unconfirmed, never successful or repasted\n'
 
 : >"$HIVE_TEST_LOG"
 rm -f "$HIVE_ROOT/pending-prompt"
 if HIVE_TEST_LIVE=1 HIVE_TEST_NO_ACK=1 HIVE_TEST_DIALOG=1 "$repo/bin/hive-member" send bob 'retry the swallowed Enter' >"$tmp/out" 2>"$tmp/error"; then
   echo 'unconfirmed submission unexpectedly succeeded' >&2; exit 1
+else
+  [[ $? == 2 ]]
 fi
 if rg -q '^tmux send-keys' "$HIVE_TEST_LOG"; then echo 'confirmed a dialog after paste' >&2; exit 1; fi
-rg -q 'not confirmed' "$tmp/error"
+rg -q 'unconfirmed' "$tmp/error"
 printf 'stale receipt rejected; dialog not confirmed by transcript text\n'
 
 : >"$HIVE_TEST_LOG"

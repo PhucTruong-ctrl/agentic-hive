@@ -174,7 +174,7 @@ cmd_join() {
 
 cmd_say() {
   require_init
-  local m body g ts json=0 room_only=0 names mentions unknown targets=() target report results detail prompt active=0
+  local m body g ts json=0 room_only=0 names mentions unknown targets=() target report results detail prompt status active=0
   m=$(require_member)
   while (($#)); do
     case $1 in
@@ -222,7 +222,7 @@ cmd_say() {
   exec 9>&-
 
   notify "$m" || true
-  report='{"sent":[],"failed":{}}'
+  report='{"sent":[],"failed":{},"unconfirmed":{}}'
   if ((${#targets[@]})); then
     prompt=$(printf '%s' "$body" | tr '\n\r' '  ')
     if [[ $m == beekeeper ]]; then
@@ -234,17 +234,19 @@ cmd_say() {
     for target in "${targets[@]}"; do
       (
         if detail=$("$HIVE_MEMBER_BIN" send "$target" "$prompt" 2>&1); then
-          jq -n --arg target "$target" '{target: $target, ok: true}'
+          jq -n --arg target "$target" '{target: $target, status: 0}'
         else
-          jq -n --arg target "$target" --arg error "$detail" '{target: $target, ok: false, error: $error}'
+          status=$?
+          jq -n --arg target "$target" --argjson status "$status" --arg error "$detail" '{target: $target, status: $status, error: $error}'
         fi
       ) >"$results/$target.json" &
       active=$((active + 1))
       if ((active == 4)); then wait; active=0; fi
     done
     wait
-    report=$(jq -sc '{sent: [ .[] | select(.ok) | .target ] | sort,
-      failed: ([ .[] | select(.ok | not) | {key: .target, value: .error} ] | from_entries)}' "$results/"*.json)
+    report=$(jq -sc '{sent: [ .[] | select(.status == 0) | .target ] | sort,
+      failed: ([ .[] | select(.status != 0 and .status != 2) | {key: .target, value: .error} ] | from_entries),
+      unconfirmed: ([ .[] | select(.status == 2) | {key: .target, value: .error} ] | from_entries)}' "$results/"*.json)
     rm -rf -- "$results"
   fi
   if ((json)); then
@@ -252,10 +254,12 @@ cmd_say() {
   else
     echo "hive: said (generation $g)"
     jq -r '.sent[] | "hive: sent to " + .' <<<"$report"
+    jq -r '.unconfirmed | to_entries[] | "hive: submission to " + .key + " unconfirmed: " + .value' <<<"$report" >&2
     if [[ $(jq '.failed | length' <<<"$report") != 0 ]]; then
       jq -r '.failed | to_entries[] | "hive: delivery to " + .key + " failed: " + .value' <<<"$report" >&2
       return 1
     fi
+    [[ $(jq '.unconfirmed | length' <<<"$report") == 0 ]] || return 2
   fi
 }
 

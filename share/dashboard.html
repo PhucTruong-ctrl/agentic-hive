@@ -223,7 +223,7 @@
   .last-room { margin-top: 9px; padding: 7px 9px; border-radius: 6px; background: var(--chip);
     color: var(--muted); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .last-room b { color: var(--ink); }
-  .room-compose { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .room-compose { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow-wrap: anywhere; gap: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
   .room-compose textarea { width: 100%; min-height: 72px; max-height: 180px; resize: vertical; font: inherit; color: var(--ink);
     background: var(--chip); border: 1px solid var(--line); border-radius: 7px; padding: 9px; }
   .room-compose .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -233,11 +233,13 @@
   .room-compose .hint { color: var(--muted); font-size: 12px; }
   .room-compose .recipients { color: var(--muted); font-size: 12px; min-height: 18px; }
   .room-compose .recipients b { color: var(--accent); }
-  .reply-draft { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 6px 8px;
+  .reply-draft { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; padding: 6px 8px;
     background: var(--chip); border-left: 3px solid var(--accent); border-radius: 0 5px 5px 0; font-size: 12px; }
   .reply-draft[hidden] { display: none; }
-  .reply-draft .context { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .reply-draft button { border: 0; background: none; color: var(--muted); cursor: pointer; font: 16px system-ui; }
+  .reply-draft .context { flex: 1; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .reply-draft .context b { display: block; }
+  .reply-draft .reply-excerpt { display: block; margin-top: 3px; max-height: 6em; overflow-y: auto; }
+  .reply-draft button { flex: 0 0 auto; border: 0; background: none; color: var(--muted); cursor: pointer; font: 16px system-ui; }
   .feedback { color: var(--muted); font-size: 12px; min-height: 18px; }
   .feedback.error { color: var(--dead); }
   .quota-stat { grid-column: span 2; }
@@ -745,9 +747,12 @@ async function sendMemberAction(button) {
   } finally { button.disabled = false; }
 }
 
+function mentionedNames(text) {
+  return new Set([...text.matchAll(/(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})/g)].map(m => m[1].replace(/[.,;:]+$/, "")));
+}
+
 function updateRecipients() {
-  const text = $("room-message").value;
-  const names = new Set([...text.matchAll(/(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})/g)].map(m => m[1].replace(/[.,;:]+$/, "")));
+  const names = mentionedNames($("room-message").value);
   const known = new Set(["beekeeper", ...(dashboardData?.members || []).map(m => m.member)]);
   const unknown = [...names].filter(name => name !== "all" && !known.has(name));
   const preview = $("room-recipients");
@@ -818,12 +823,16 @@ function startReply(gen) {
   const post = dashboardData?.room.find(e => e.gen === Number(gen)) || dashboardData?.beekeeper_mentions?.find(e => e.gen === Number(gen));
   if (!post) return;
   showTab("overview");
-  const excerpt = post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " ").replace(/@/g, "").slice(0, 120);
+  let excerpt = post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " ").replace(/@/g, "");
+  if (excerpt.length > 480) {
+    const prefix = excerpt.slice(0, 480), boundary = prefix.lastIndexOf(" ");
+    excerpt = (boundary > 320 ? prefix.slice(0, boundary) : prefix) + "…";
+  }
   replyTo = {gen: post.gen, member: post.member, excerpt};
-  $("reply-context").textContent = `Replying to ${post.member} · Room #${post.gen}: ${excerpt}`;
+  $("reply-context").innerHTML = `<b>Replying to ${esc(post.member)} · Room #${post.gen}</b><span class="reply-excerpt">${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " "))}</span>`;
   $("reply-draft").hidden = false;
   $("room-message").maxLength = 12000 - `> Reply to ${post.member} · Room #${post.gen}: ${excerpt}\n\n`.length;
-  if (post.member !== "beekeeper" && !$("room-message").value.includes(`@${post.member}`)) insertMention(post.member);
+  if (post.member !== "beekeeper" && !mentionedNames($("room-message").value).has(post.member)) insertMention(post.member);
   $("room-message").focus();
 }
 
@@ -855,11 +864,17 @@ async function sendRoomMessage() {
     cancelReply();
     updateRecipients();
     const failures = Object.entries(data.failed || {});
+    const unconfirmed = Object.keys(data.unconfirmed || {});
     feedback.classList.toggle("error", failures.length > 0);
-    feedback.textContent = failures.length ? `Posted to Room. Delivery failed: ${failures.map(([name, reason]) => `${name} (${reason})`).join(", ")}`
-      : `Posted to Room${data.sent.length ? ` and sent to ${data.sent.join(", ")}` : ""}.`;
-    const next = await fetch("/api/state", {cache: "no-store"});
-    if (next.ok) render(await next.json());
+    feedback.textContent = `Posted to Room${data.sent.length ? ` and submitted to ${data.sent.join(", ")}` : ""}.`;
+    if (unconfirmed.length) feedback.textContent += ` Submission unconfirmed: ${unconfirmed.join(", ")}. Check the member terminal before resending.`;
+    if (failures.length) feedback.textContent += ` Delivery failed: ${failures.map(([name, reason]) => `${name} (${reason})`).join(", ")}`;
+    try {
+      const next = await fetch("/api/state", {cache: "no-store"});
+      if (next.ok) render(await next.json());
+    } catch (_) {
+      feedback.textContent += " Room refresh is unavailable; your message is posted.";
+    }
   } catch (err) {
     feedback.classList.add("error");
     feedback.textContent = `Could not post: ${err.message}`;

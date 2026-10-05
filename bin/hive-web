@@ -544,7 +544,8 @@ def beekeeper_mentions(posts, include_done=False):
                 answered.add((reply[1], int(reply[2])))
     pending = []
     for post in posts:
-        if post["member"] == WEB_MEMBER or (not include_done and room_done_path(post["gen"]).is_file()):
+        if post["member"] == WEB_MEMBER or (not include_done and
+                (room_done_path(post["gen"]).is_file() or (post["member"], post["gen"]) in answered)):
             continue
         body = re.sub(r"^> Reply to [^\n]*\n\n", "", post["body"])
         names = {m.rstrip(".,;:") for m in re.findall(r"(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})", body)}

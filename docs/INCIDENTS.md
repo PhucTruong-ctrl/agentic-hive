@@ -54,3 +54,24 @@ line. Confirmation still requires the matching hook receipt and never repastes.
 An isolated real Codex check queued a second prompt during a running tool and
 confirmed its submission 31 seconds later. A delayed-receipt regression also
 checks that accepted input gets one paste and one Enter.
+
+## 2026-10-05 — waiting for processing makes accepted mentions look failed
+
+Observed again after extending the receipt window: `sol-3` displayed the
+Beekeeper's reply to Room #2706 in its transcript while Send reported unconfirmed
+delivery. A busy Codex can accept input into its own queue before running the
+prompt hook, so a longer receipt timeout delays the WebUI without establishing
+that delivery failed.
+
+Change: return on a matching hook receipt or two consecutive composer resets
+after Hive's guarded Enter, with the harness still alive. A queued prompt is
+accepted input, not evidence of processing or completed work. Live confirmation
+that remains uncertain returns exit 2 and a separate `unconfirmed` report;
+definite delivery errors remain failures. Retry Enter only while the submitted
+text stays in the composer, never repaste it, and leave dialogs untouched.
+
+Evidence: an isolated real Codex accepted idle input in 2621ms and busy input in
+2858ms while its hook receipt remained unchanged, then answered the queued prompt
+once. Regression checks cover swallowed Enter, an unchanged composer, missing
+receipts, dialogs, and concurrent submissions. Production member sessions were
+not changed.

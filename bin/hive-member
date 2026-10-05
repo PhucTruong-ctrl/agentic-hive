@@ -148,12 +148,15 @@ composer() {
 
 confirm_prompt() {
   local m="$1" message="$2" before="$3" retry="${4:-0}" before_draft="${5:-}" receipt hash draft attempt
+  local entered=0 cleared=0 attempts=180
   local receipt_file="$HIVE_ROOT/members/$1/state/last-submitted-prompt"
   hash=$(printf '%s' "$message" | jq -Rrjs 'gsub("^\\s+|\\s+$"; "")' | sha256sum | cut -d' ' -f1)
-  # A busy harness may accept/queue the input before firing UserPromptSubmit.
-  # Give that receipt time to arrive without repasting an accepted prompt.
-  for attempt in $(seq 91); do
-    sleep 0.5
+  # UserPromptSubmit may run only when a busy harness processes queued input.
+  # A guarded Enter followed by a stably reset composer confirms handoff now;
+  # it does not claim the member has processed the message or completed work.
+  ((retry)) && attempts=40
+  for attempt in $(seq "$attempts"); do
+    sleep 0.25
     receipt=$(cat "$receipt_file" 2>/dev/null || true)
     if [[ $receipt != "$before" && ${receipt#* } == "$hash" ]]; then
       say "sent message to $m (submission confirmed)"
@@ -161,15 +164,29 @@ confirm_prompt() {
     fi
     # Submit/retry Enter only while our text remains in the composer. Never
     # repaste or send blind keystrokes into a dialog or an accepted turn.
-    if ((retry && attempt % 2 == 0)); then
-      draft=$(composer "$m" || true)
+    if ((retry)) && draft=$(composer "$m"); then
       if [[ -n $draft && ${draft:0:32} == "${message:0:32}" ]] ||
          [[ $draft != "$before_draft" && ( $draft == '[Pasted Content '* || $draft == '[Pasted text '* ) ]]; then
-        tmux send-keys -t "=hive-$m:0.0" Enter || die "could not submit message to $m"
+        cleared=0
+        if ((attempt % 4 == 0)); then
+          tmux send-keys -t "=hive-$m:0.0" Enter || die "could not submit message to $m"
+          entered=1
+        fi
+      elif ((entered)) && [[ $draft == "$before_draft" || -z $draft || $draft == 'Ask Codex to do anything' ]]; then
+        cleared=$((cleared + 1))
+        if ((cleared >= 2)) && harness_alive "$m"; then
+          say "sent message to $m (accepted by harness; processing receipt pending)"
+          return 0
+        fi
+      else
+        cleared=0
       fi
+    else
+      cleared=0
     fi
   done
-  die "submission to $m was not confirmed; inspect its terminal before resending"
+  printf 'hive-member: submission to %s is unconfirmed; inspect its terminal before resending\n' "$m" >&2
+  return 2
 }
 
 send_prompt() {

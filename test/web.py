@@ -38,6 +38,7 @@ class DashboardControls(unittest.TestCase):
 printf '%s\\n' "$2" >>"$HIVE_ROOT/sent-targets"
 printf '%s' "$3" >"$HIVE_ROOT/sent-$2"
 if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; exit 1; fi
+if [[ $2 == ${HIVE_TEST_UNCONFIRMED_MEMBER:-} ]]; then echo 'submission unconfirmed; inspect terminal before resending' >&2; exit 2; fi
 ''')
         sender.chmod(0o755)
         env = patch.dict(os.environ, {"HIVE_MEMBER_BIN": str(sender)})
@@ -89,6 +90,17 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
     def test_direct_message_does_not_deliver_its_room_record_twice(self):
         web.run_hive("hive", "message", "bob", "@bob check this", member="alice")
         self.assertEqual((self.root / "sent-targets").read_text().splitlines(), ["bob"])
+
+    def test_unconfirmed_submission_is_separate_from_failed_delivery(self):
+        with patch.dict(os.environ, {"HIVE_TEST_UNCONFIRMED_MEMBER": "bob"}):
+            status, data = self.request("/api/room", {"message": "@all check this"})
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["sent"], ["alice"])
+        self.assertEqual(data["failed"], {})
+        self.assertIn("inspect terminal", data["unconfirmed"]["bob"])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "1")
+        self.assertEqual(sorted((self.root / "sent-targets").read_text().splitlines()), ["alice", "bob"])
 
     def test_room_only_and_human_mentions_do_not_prompt(self):
         report = json.loads(web.run_hive("hive", "say", "--json", "--room-only", "Quoting @all and @unknown", member="alice"))
@@ -275,8 +287,7 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         self.assertEqual(len(web.beekeeper_mentions(posts)), 2)
         self.assertFalse(web.beekeeper_mentions(posts)[0]["replied"])
         posts.append({"gen": 12, "member": "beekeeper", "body": "> Reply to alice · Room #7: choose?\n\n@alice B"})
-        self.assertEqual([post["gen"] for post in web.beekeeper_mentions(posts)], [7, 8])
-        self.assertTrue(web.beekeeper_mentions(posts)[0]["replied"])
+        self.assertEqual([post["gen"] for post in web.beekeeper_mentions(posts)], [8])
 
     def test_question_survives_room_display_window_and_answer_prompts_member(self):
         web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")
@@ -289,7 +300,7 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         status, report = self.request("/api/room", {"message": "> Reply to alice · Room #1: Which direction?\n\n@alice Go with B"})
         self.assertEqual(status, 200)
         self.assertEqual(report["sent"], ["alice"])
-        self.assertTrue(web.beekeeper_mentions(web.room(limit=None))[0]["replied"])
+        self.assertEqual(web.beekeeper_mentions(web.room(limit=None)), [])
         status, report = self.request("/api/room-done", {"generation": 1})
         self.assertEqual(status, 200)
         self.assertEqual(web.beekeeper_mentions(web.room(limit=None)), [])
@@ -299,6 +310,13 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         self.assertEqual(status, 200)
         self.assertEqual((self.root / "ROOM.md").read_text(), history)
         self.assertTrue(web.room_done_path(1).is_file())
+
+    def test_unsent_reply_keeps_the_original_notification(self):
+        web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")
+        status, _ = self.request("/api/room", {"message": "> Reply to alice · Room #1: Which direction?\n\n@alice " + "x" * 12000})
+        self.assertEqual(status, 400)
+        self.assertEqual([p["gen"] for p in web.beekeeper_mentions(web.room(limit=None))], [1])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "1")
 
     def test_mark_done_only_affects_the_selected_human_notification(self):
         web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")

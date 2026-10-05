@@ -141,8 +141,11 @@ not a command hierarchy.
 Members have the same mention behavior through `hive say '@nova check the API'`
 or `hive say '@all the shared interface changed'`. `@all` excludes the sender
 and the Beekeeper. Use `hive say --room-only` when quoting mentions without
-prompting anyone. Live deliveries confirm submission through the harness hook;
-if submission cannot be confirmed, Hive reports it so the terminal can be checked.
+prompting anyone. Live delivery returns when the harness accepts the input;
+a busy member may process it later. Hive checks a matching prompt-hook receipt
+or a composer reset after submitting its text, without waiting for the member's
+work to finish. Unconfirmed submission is reported separately from delivery
+failure; check the terminal before resending to avoid duplicates.
 
 ![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
 
@@ -151,8 +154,10 @@ Explicit `@beekeeper` mentions appear as separate cards in the Room's **For you*
 tab; questions have an
 **Answer** shortcut that replies to the original post and prompts its member.
 Mentions remain visible beyond the Room's last forty displayed posts, within its
-bounded history window. Replying marks a card **You replied**. Click **Done** to
-remove a handled notification; dismissal survives refreshes and other browsers.
+bounded history window. Sending a reply automatically clears its notification.
+The reply quotes the original question and its Room number for the receiving
+member. Click **Done** to dismiss a notification without replying; dismissal
+survives refreshes and other browsers.
 Done keeps the original Room message and sends no prompts. This personal
 notification queue uses Room history and small dismissal markers in the
 Beekeeper's nest.
@@ -164,7 +169,7 @@ Incoming messages preserve keyboard focus and drafts; clicking Answer opens
 the reply composer. Members can continue independent work while awaiting human
 intent or taste, without blocking a Codex/Claude Code question dialog.
 
-![For you Room tab with separate notification cards, reply status, Done actions, and mention suggestions](docs/dashboard-questions.png)
+![For you Room tab with notification cards, Done actions, and a responsive reply preview](docs/dashboard-questions.png)
 
 ### Claims and Git projects: see shared seams
 
