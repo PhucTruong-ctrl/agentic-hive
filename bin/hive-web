@@ -524,8 +524,28 @@ def state():
         "claims": claims(),
         "quota": quota(),
         "room": all_room[-ROOM_ENTRIES:],
+        "beekeeper_mentions": beekeeper_mentions(all_room),
         "projects": cached_git_projects([m["cwd"] for m in ms]),
     }
+
+
+def beekeeper_mentions(posts):
+    """An attention view of Room history, not a separate question registry."""
+    answered = set()
+    for post in posts:
+        if post["member"] == WEB_MEMBER:
+            reply = re.match(r"^> Reply to ([a-z0-9][a-z0-9._-]{0,63}) · Room #(\d+):", post["body"])
+            if reply:
+                answered.add((reply[1], int(reply[2])))
+    pending = []
+    for post in posts:
+        if post["member"] == WEB_MEMBER or (post["member"], post["gen"]) in answered:
+            continue
+        body = re.sub(r"^> Reply to [^\n]*\n\n", "", post["body"])
+        names = {m.rstrip(".,;:") for m in re.findall(r"(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})", body)}
+        if WEB_MEMBER in names:
+            pending.append({**post, "question": "?" in body or "？" in body})
+    return pending
 
 
 def run_hive(binary, *args, input_text=None, member=None, timeout=45):
@@ -543,7 +563,7 @@ def run_hive(binary, *args, input_text=None, member=None, timeout=45):
 
 
 def browser_path(path):
-    """Resolve only the shared Room/files and member nest folders."""
+    """Resolve shared files, project artifacts, and member nest folders."""
     parts = path.split("/") if path else []
     if any(part in ("", ".", "..") for part in parts):
         raise ValueError("invalid file path")
@@ -553,7 +573,7 @@ def browser_path(path):
         if len(parts) < 3 or not MEMBER_RE.fullmatch(parts[1]) or parts[2] not in ("notes", "artifacts", "scratch", "state"):
             raise ValueError("file path is outside member files")
         base = HIVE_ROOT.joinpath(*parts[:3])
-    elif parts[0] in ("knowledge", "artifacts"):
+    elif parts[0] in ("knowledge", "artifacts", "projects"):
         base = HIVE_ROOT / parts[0]
     elif parts == ["ROOM.md"]:
         base = HIVE_ROOT / "ROOM.md"
@@ -569,7 +589,7 @@ def file_entries(path):
     browser_path(path)
     if not path:
         return [{"name": n, "path": n, "type": t} for n, t in
-                (("ROOM.md", "file"), ("knowledge", "dir"), ("artifacts", "dir"), ("members", "dir"))]
+                (("ROOM.md", "file"), ("knowledge", "dir"), ("artifacts", "dir"), ("projects", "dir"), ("members", "dir"))]
     if path == "members":
         root = HIVE_ROOT / "members"
         return [{"name": p.name, "path": f"members/{p.name}", "type": "dir"}
@@ -582,7 +602,7 @@ def file_entries(path):
     if not directory.is_dir():
         raise ValueError("folder not found")
     entries = []
-    for child in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))[:300]:
+    for child in sorted(directory.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
         try:
             browser_path(f"{path}/{child.name}")
             if not (child.is_dir() or child.is_file()):
@@ -594,6 +614,18 @@ def file_entries(path):
                         "type": "dir" if child.is_dir() else "file", "size": stat.st_size,
                         "modified": datetime.fromtimestamp(stat.st_mtime).astimezone().isoformat(timespec="seconds")})
     return entries
+
+
+def image_mime(data):
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -644,16 +676,28 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 rel = parse_qs(url.query).get("path", [""])[0]
                 if path == "/api/files":
-                    self._send(200, json.dumps({"path": rel, "entries": file_entries(rel)}), "application/json")
+                    offset = int(parse_qs(url.query).get("offset", ["0"])[0])
+                    if offset < 0:
+                        raise ValueError("invalid file offset")
+                    entries = file_entries(rel)
+                    end = offset + 300
+                    self._send(200, json.dumps({"path": rel, "entries": entries[offset:end],
+                                                 "next_offset": end if end < len(entries) else None}), "application/json")
                     return
                 target = browser_path(rel)
                 if target is None or not target.is_file():
                     raise ValueError("file not found")
-                if parse_qs(url.query).get("download") == ["1"]:
+                download = parse_qs(url.query).get("download") == ["1"]
+                view = parse_qs(url.query).get("view") == ["1"]
+                with target.open("rb") as source:
+                    mime = image_mime(source.read(16))
+                if view and not mime:
+                    raise ValueError("inline preview is supported for raster images only")
+                if download or view:
                     self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Type", mime if view else "application/octet-stream")
                     self.send_header("Content-Length", str(target.stat().st_size))
-                    self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(target.name))
+                    self.send_header("Content-Disposition", ("inline" if view else "attachment") + "; filename*=UTF-8''" + quote(target.name))
                     self.send_header("Cache-Control", "no-store")
                     self.send_header("X-Content-Type-Options", "nosniff")
                     self.end_headers()
@@ -666,7 +710,7 @@ class Handler(BaseHTTPRequestHandler):
                 binary = b"\0" in data or data.decode("utf-8", errors="replace").count("\ufffd") > 10
                 self._send(200, json.dumps({"path": rel, "text": "" if binary else data[:131072].decode("utf-8", errors="replace"),
                                             "binary": binary, "truncated": len(data) > 131072,
-                                            "size": target.stat().st_size}), "application/json")
+                                            "size": target.stat().st_size, "image_mime": mime}), "application/json")
             except (OSError, ValueError) as exc:
                 self._send(400, json.dumps({"error": str(exc)}), "application/json")
         elif path == "/static/xterm.js":

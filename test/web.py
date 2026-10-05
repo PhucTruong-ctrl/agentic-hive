@@ -114,6 +114,17 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         self.assertEqual((self.root / ".room-generation").read_text().strip(), "0")
         self.assertFalse((self.root / "sent-targets").exists())
 
+    def test_unavailable_delivery_temp_directory_fails_before_room_append(self):
+        blocked = self.root / "not-a-directory"
+        blocked.write_text("blocked")
+        with patch.dict(os.environ, {"TMPDIR": str(blocked)}):
+            status, data = self.request("/api/room", {"message": "@alice please check this"})
+        self.assertEqual(status, 400)
+        self.assertIn("mktemp", data["error"])
+        self.assertEqual((self.root / ".room-generation").read_text().strip(), "0")
+        self.assertNotIn("please check this", (self.root / "ROOM.md").read_text())
+        self.assertFalse((self.root / "sent-targets").exists())
+
     def test_lifecycle_buttons_execute_session_commands(self):
         with patch.object(web, "run_hive", return_value="ok") as run:
             status, _ = self.request("/api/member", {"member": "alice", "action": "restart"})
@@ -198,6 +209,85 @@ if [[ $2 == ${HIVE_TEST_FAIL_MEMBER:-} ]]; then echo 'member unavailable' >&2; e
         (note.parent / "outside").symlink_to(Path(self.temp.name).parent)
         with self.assertRaises(ValueError):
             web.browser_path("members/alice/notes/outside")
+
+    def test_project_documents_and_paginated_artifacts(self):
+        project = self.root / "projects" / "sample"
+        project.mkdir(parents=True)
+        for number in range(305):
+            (project / f"artifact-{number:03}.md").write_text(f"Artifact {number}\n")
+        status, listing = self.get_json("/api/files?path=projects")
+        self.assertEqual(status, 200)
+        self.assertEqual(listing["entries"][0]["path"], "projects/sample")
+        _, first = self.get_json("/api/files?path=projects/sample")
+        _, rest = self.get_json("/api/files?path=projects/sample&offset=300")
+        self.assertEqual(first["next_offset"], 300)
+        self.assertIsNone(rest["next_offset"])
+        self.assertEqual(len({entry["path"] for entry in first["entries"] + rest["entries"]}), 305)
+        _, preview = self.get_json("/api/file?path=projects/sample/artifact-304.md")
+        self.assertEqual(preview["text"], "Artifact 304\n")
+        self.assertEqual(self.get_json("/api/files?path=projects/sample&offset=-1")[0], 400)
+        with self.assertRaises(ValueError):
+            web.browser_path("projects/sample/../../ROOM.md")
+        (project / "outside").symlink_to(self.root.parent)
+        self.assertNotIn("outside", [entry["name"] for entry in web.file_entries("projects/sample")])
+        self.assertEqual(self.get_json("/api/file?path=projects/sample/outside/secret")[0], 400)
+
+    def test_raster_preview_streams_image_but_never_html_or_svg(self):
+        project = self.root / "projects" / "sample"
+        project.mkdir(parents=True)
+        image = project / "capture.bin"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+        _, preview = self.get_json("/api/file?path=projects/sample/capture.bin")
+        self.assertEqual(preview["image_mime"], "image/png")
+        handler = object.__new__(web.Handler)
+        handler.path = "/api/file?path=projects/sample/capture.bin&view=1"
+        handler.command = "GET"
+        handler.wfile = io.BytesIO()
+        headers = {}
+        handler.send_response = lambda code: headers.update(status=code)
+        handler.send_header = lambda name, value: headers.update({name: value})
+        handler.end_headers = lambda: None
+        handler.do_GET()
+        self.assertEqual(headers["status"], 200)
+        self.assertEqual(headers["Content-Type"], "image/png")
+        self.assertTrue(headers["Content-Disposition"].startswith("inline;"))
+        self.assertEqual(handler.wfile.getvalue(), image.read_bytes())
+        for filename, body in (("page.png", "<script>alert(1)</script>"), ("drawing.svg", "<svg onload='alert(1)'/>")):
+            (project / filename).write_text(body)
+            self.assertEqual(self.get_json(f"/api/file?path=projects/sample/{filename}&view=1")[0], 400)
+            _, preview = self.get_json(f"/api/file?path=projects/sample/{filename}")
+            self.assertIsNone(preview["image_mime"])
+            self.assertEqual(preview["text"], body)
+
+    def test_only_explicit_human_mentions_need_beekeeper_attention(self):
+        bodies = ["Ordinary update", "@all any feedback?", "@bob which API?",
+                  "mail me at person@beekeeper", "`/path/@beekeeper`",
+                  "> Reply to alice · Room #1: @beekeeper choose?\n\nNo human question here",
+                  "@beekeeper. Which direction?", "@beekeeper an artifact is ready", "@beekeeper you wrote this"]
+        posts = [{"gen": index + 1, "member": "alice" if index < 8 else "beekeeper", "body": body}
+                 for index, body in enumerate(bodies)]
+        mentions = web.beekeeper_mentions(posts)
+        self.assertEqual([post["gen"] for post in mentions], [7, 8])
+        self.assertEqual([post["question"] for post in mentions], [True, False])
+        # A peer answer and a human reply to another sender cannot clear this question.
+        posts += [{"gen": 10, "member": "bob", "body": "> Reply to alice · Room #7: choose?\n\nI prefer B"},
+                  {"gen": 11, "member": "beekeeper", "body": "> Reply to bob · Room #7: choose?\n\n@bob B"}]
+        self.assertEqual(len(web.beekeeper_mentions(posts)), 2)
+        posts.append({"gen": 12, "member": "beekeeper", "body": "> Reply to alice · Room #7: choose?\n\n@alice B"})
+        self.assertEqual([post["gen"] for post in web.beekeeper_mentions(posts)], [8])
+
+    def test_question_survives_room_display_window_and_answer_prompts_member(self):
+        web.run_hive("hive", "say", "@beekeeper Which direction?", member="alice")
+        for number in range(web.ROOM_ENTRIES + 1):
+            web.run_hive("hive", "say", f"Update {number}", member="bob")
+        with patch.object(web, "cached_git_projects", return_value=[]):
+            snapshot = web.state()
+        self.assertNotIn(1, [post["gen"] for post in snapshot["room"]])
+        self.assertEqual([post["gen"] for post in snapshot["beekeeper_mentions"]], [1])
+        status, report = self.request("/api/room", {"message": "> Reply to alice · Room #1: Which direction?\n\n@alice Go with B"})
+        self.assertEqual(status, 200)
+        self.assertEqual(report["sent"], ["alice"])
+        self.assertEqual(web.beekeeper_mentions(web.room(limit=None)), [])
 
     def test_fragmented_websocket_input(self):
         class OneByteSocket:

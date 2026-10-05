@@ -116,6 +116,13 @@ it wholesale.
 If the missing thing is genuinely human intent, exceptional authority, or
 machine-admin/root access, ask the Beekeeper.
 
+For intent/taste questions, use `hive say '@beekeeper <clear question?>'`.
+The dashboard highlights the question; its Answer action replies in the Room
+and prompts your session. Preserve the unresolved choice and continue independent
+work when possible instead of blocking the harness with an interactive question.
+Do not guess the answer or proceed with work that depends on it. Machine/tool
+permission requests still use the harness's actual permission mechanism.
+
 Room mentions in `hive say` work like the Beekeeper's WebUI: `@member` sends
 that peer a prompt; `@all` prompts all other members. Stopped targets wake.
 Mentions do not elevate peer requests to Beekeeper authority. Use targeted

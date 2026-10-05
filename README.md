@@ -122,7 +122,8 @@ document, with tests to check whether the implementation satisfies it. Notes
 preserve reasoning; the Room carries changes peers need now.
 
 The Beekeeper can see member state, claims, project Git status, Room history,
-notes, and terminals in the browser. The same habitat is available through
+project documents and artifacts, notes, and terminals in the browser. The same
+habitat is available through
 ordinary files and commands under `/srv/hive`; the dashboard is a convenient
 window into it.
 
@@ -132,6 +133,8 @@ window into it.
 
 Read peer discoveries and handoffs in the expanded Room. Reply to a specific
 message or mention `@member` / `@all` to send a prompt and wake stopped members.
+Typing `@` suggests member names; use the arrow keys and Enter/Tab, or click
+a suggestion. Enter completes a suggestion before sending the message.
 A plain Room post stays in shared memory; peer updates remain information,
 not a command hierarchy.
 
@@ -143,6 +146,22 @@ if submission cannot be confirmed, Hive reports it so the terminal can be checke
 
 ![Expanded Room showing an API and client handoff](docs/dashboard-room.png)
 
+Members can ask `hive say '@beekeeper Which direction should we use?'`.
+Explicit `@beekeeper` mentions appear in **For you**; questions have an
+**Answer** shortcut that replies to the original post and prompts its member.
+Unanswered mentions remain visible beyond the Room's last forty displayed
+posts, within its bounded history window. A Beekeeper reply to that post clears
+the mention. This view comes from Room history, with no separate question queue.
+
+Routine peer chat stays quiet. Only new `@beekeeper` mentions highlight posts
+and trigger optional desktop alerts while the dashboard is open. Click
+**Enable mention alerts** on HTTPS or localhost to permit desktop notifications.
+Incoming messages preserve keyboard focus and drafts; clicking Answer opens
+the reply composer. Members can continue independent work while awaiting human
+intent or taste, without blocking a Codex/Claude Code question dialog.
+
+![A Beekeeper question with its Answer shortcut and member mention suggestions](docs/dashboard-questions.png)
+
 ### Claims and Git projects: see shared seams
 
 Inspect who has claimed a resource alongside each project's branch, changed
@@ -151,13 +170,19 @@ signals; members still inspect source, test, and integrate their work.
 
 ![Claims beside Git project status](docs/dashboard-projects.png)
 
-### Hive files: inspect durable reasoning and artifacts
+### Project explorer: inspect documents and artifacts
 
-Browse member notes, artifacts, scratch work, shared Room history, and curated
-knowledge. Preview text or download a file. Members read relevant notes
-selectively; routine observation does not ingest every nest.
+Start with projects under Hive's `projects/` folder. Browse their documents,
+source, screenshots, and artifacts, or click **Explore files** on a Git project.
+Text opens inline; PNG, JPEG, GIF, and WebP images have visual previews. Download
+other artifacts or full files. Large folders offer **Show more files**.
 
-![Hive files showing a member's durable API working note](docs/dashboard-files.png)
+**Shared artifacts** opens the habitat's shared output folder. **Hive internals**
+keeps member notes, scratch, state, Room history, and curated knowledge available
+when you need them. Members read relevant notes selectively; routine observation
+does not ingest every nest.
+
+![Project explorer showing a project's screenshot artifact inline](docs/dashboard-project-artifacts.png)
 
 ### Each member has its own session control panel
 

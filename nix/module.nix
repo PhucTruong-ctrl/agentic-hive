@@ -164,7 +164,9 @@ in
         # The browser host shell needs the hive account's own home for history
         # and normal CLI configuration; Unix permissions still separate users.
         ProtectHome = false;
-        ReadWritePaths = [ cfg.root "/home/hive" ];
+        # CLI delivery/probes and harnesses use mktemp. Keep /tmp shared so
+        # dashboard clients can reach the existing tmux server sockets there.
+        ReadWritePaths = [ cfg.root "/home/hive" "/tmp" ];
         PrivateTmp = false;
         PrivateDevices = true;
         ProtectKernelTunables = true;

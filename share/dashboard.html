@@ -110,6 +110,19 @@
     box-shadow: 0 2px 10px rgba(0,0,0,.12); }
   .jump-latest[hidden] { display: none; }
   .e.new { animation: flash 2.5s ease-out; }
+  .attention { flex-shrink: 0; max-height: 160px; overflow: auto; margin-bottom: 10px; border: 1px solid var(--accent); border-radius: 7px; }
+  .attention[hidden] { display: none; }
+  .attention-item { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .attention-item:last-child { border-bottom: 0; }
+  .attention-item p { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+  .attention-item button { border: 0; background: none; color: var(--accent); cursor: pointer; font: 600 12px system-ui; padding: 0; }
+  .mention-input { position: relative; }
+  .mention-options { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 2; max-height: 200px; overflow: auto;
+    background: var(--panel); border: 1px solid var(--accent); border-radius: 7px; box-shadow: 0 4px 18px rgba(0,0,0,.15); }
+  .mention-options[hidden] { display: none; }
+  .mention-options button { display: block; width: 100%; text-align: left; border: 0 !important; border-radius: 0 !important; }
+  .mention-options button[aria-selected="true"] { background: var(--chip); color: var(--accent); }
+  .mention-options small { color: var(--muted); margin-left: 8px; }
   @media (prefers-color-scheme: dark) { .e { --sender-color: hsl(var(--sender-hue) 70% 65%); } }
   @keyframes flash { from { background: color-mix(in srgb, var(--accent) 18%, transparent); } to { background: transparent; } }
 
@@ -181,6 +194,8 @@
   .file-preview h3 { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
   .file-preview pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 var(--mono); max-height: 62vh; overflow: auto; }
   .file-preview a { color: var(--accent); }
+  .file-preview img { display: block; max-width: 100%; max-height: 65vh; object-fit: contain; margin: 12px auto 0; }
+  .file-intro { color: var(--muted); margin: 0 0 12px; }
   @media (max-width: 700px) { .file-browser { grid-template-columns: 1fr; } }
   .tabs, .member-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
   .tabs button, .member-tabs button, .top-action { font: inherit; cursor: pointer; border: 1px solid var(--line);
@@ -247,6 +262,9 @@
       · room generation <b id="gen">–</b> · updated <span id="updated">–</span>
       <span class="stale-msg">· connection lost, retrying</span></span>
     <button class="top-action" onclick="openTerminal(null)">Host shell</button>
+    <button class="top-action" id="attention-link" onclick="showAttention()" hidden>For you</button>
+    <button class="top-action" id="mention-alerts" onclick="enableMentionAlerts()">Enable mention alerts</button>
+    <span id="attention-status" class="feedback" role="status"></span>
   </header>
 
   <div class="host">
@@ -258,7 +276,7 @@
   </div>
 
   <nav class="tabs" aria-label="Dashboard views">
-    <button class="active" data-tab="overview">Members &amp; Room</button><button data-tab="activity">Claims &amp; Projects</button><button data-tab="files">Hive files</button>
+    <button class="active" data-tab="overview">Members &amp; Room</button><button data-tab="activity">Claims &amp; Projects</button><button data-tab="files">Project explorer</button>
   </nav>
   <div class="panel dashboard-grid" id="panel-overview">
   <section>
@@ -272,11 +290,15 @@
   </section>
   <section class="room-panel" id="room-panel">
     <div class="room-heading"><h2>Room <span class="n" id="r-count"></span></h2><button class="room-expand" id="room-expand" type="button" onclick="toggleRoomExpanded()" aria-label="Expand Room" aria-expanded="false">Expand</button></div>
+    <div class="attention" id="room-attention" aria-label="Room mentions for you" hidden></div>
     <div class="room-scroll"><div class="room" id="room" role="log" aria-label="Room messages" aria-live="off"></div>
       <button class="jump-latest" id="jump-latest" onclick="jumpToLatest()" hidden>↓ Latest messages</button></div>
     <div class="room-compose">
       <div class="reply-draft" id="reply-draft" hidden><span class="context" id="reply-context"></span><button type="button" onclick="cancelReply()" title="Cancel reply" aria-label="Cancel reply">×</button></div>
-      <textarea id="room-message" maxlength="12000" aria-label="Room message" placeholder="Message the Room… Type @member or @all to wake and message agents."></textarea>
+      <div class="mention-input">
+        <div class="mention-options" id="mention-options" role="listbox" aria-label="Mention suggestions" hidden></div>
+        <textarea id="room-message" maxlength="12000" aria-label="Room message" aria-controls="mention-options" aria-autocomplete="list" aria-expanded="false" placeholder="Message the Room… Type @ to choose a member."></textarea>
+      </div>
       <div class="recipients" id="room-recipients">Room only · mention a member to send them a prompt</div>
       <div class="tools">
         <span class="hint">Enter to send · Shift+Enter for a new line</span>
@@ -291,9 +313,12 @@
     <section><h2>Git projects</h2><div id="projects"></div></section>
   </div>
   <div class="panel" id="panel-files" hidden>
-    <section><h2>Hive files</h2><div class="file-browser">
+    <section><h2>Project explorer</h2>
+      <p class="file-intro">Open a project to explore its documents, source, screenshots, and artifacts.</p>
+      <nav class="tabs" aria-label="Explorer roots"><button data-folder="projects">Projects</button><button data-folder="artifacts">Shared artifacts</button><button data-folder="">Hive internals</button></nav>
+      <div class="file-browser">
       <div><div class="file-crumbs" id="file-crumbs"></div><div class="file-list" id="file-list"></div></div>
-      <div class="file-preview" id="file-preview"><span class="empty">Choose a file to preview. Folders include member notes, artifacts, scratch, state, the shared Room, and knowledge.</span></div>
+      <div class="file-preview" id="file-preview"><span class="empty">Choose a project, then a document or artifact. Text and images open here; other files can be downloaded.</span></div>
     </div></section>
   </div>
   <footer>Hive dashboard · refreshes every 3 seconds</footer>
@@ -378,6 +403,13 @@ let replyTo = null;
 let renderedRoomKey = null;
 let currentFolder = "";
 let filesLoaded = false;
+let folderRequest = 0;
+let fileRequest = 0;
+let mentionCompletion = null;
+let mentionIndex = 0;
+let attentionKey = null;
+let mentionAlerts = false;
+try { mentionAlerts = localStorage.getItem("hive-mention-alerts") === "true"; } catch (_) {}
 
 function showTab(tab) {
   currentTab = tab;
@@ -386,38 +418,45 @@ function showTab(tab) {
     $("panel-" + name).hidden = name !== tab;
     document.querySelector(`[data-tab="${name}"]`).classList.toggle("active", name === tab);
   }
-  if (tab === "files" && !filesLoaded) openFolder("");
+  if (tab === "files" && !filesLoaded) openFolder("projects");
 }
 
-async function openFolder(path) {
+async function openFolder(path, offset = 0) {
   const list = $("file-list"), crumbs = $("file-crumbs");
-  list.textContent = "Loading…";
+  const request = ++folderRequest;
+  if (!offset) { list.textContent = "Loading…"; ++fileRequest; }
   try {
-    const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, {cache: "no-store"});
+    const response = await fetch(`/api/files?path=${encodeURIComponent(path)}&offset=${offset}`, {cache: "no-store"});
     const data = await response.json();
+    if (request !== folderRequest) return;
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
     currentFolder = path;
     filesLoaded = true;
-    $("file-preview").innerHTML = `<span class="empty">Choose a file to preview.</span>`;
+    if (!offset) $("file-preview").innerHTML = `<span class="empty">${path === "projects" ? "Choose a project to explore its documents and artifacts." : "Choose a document or artifact to preview."}</span>`;
     const parts = path ? path.split("/") : [];
     crumbs.innerHTML = `<button type="button" data-folder="">Hive</button>` + parts.map((part, index) =>
       ` / <button type="button" data-folder="${esc(parts.slice(0, index + 1).join("/"))}">${esc(part)}</button>`).join("");
-    list.innerHTML = data.entries.length ? data.entries.map(entry =>
+    const html = data.entries.length ? data.entries.map(entry =>
       `<button type="button" class="file-entry" data-${entry.type === "dir" ? "folder" : "file"}="${esc(entry.path)}">${entry.type === "dir" ? "📁" : "📄"} ${esc(entry.name)}${entry.modified ? `<small>${ago(entry.modified)}${entry.type === "file" ? ` · ${Math.ceil(entry.size / 1024)} KiB` : ""}</small>` : ""}</button>`).join("")
-      : `<div class="empty" style="padding:12px">This folder is empty.</div>`;
-  } catch (err) { list.textContent = `Could not open folder: ${err.message}`; }
+      : `<div class="empty" style="padding:12px">${path === "projects" ? "No project folders yet under Hive projects." : "This folder is empty."}</div>`;
+    if (offset) { list.querySelector("[data-files-more]")?.remove(); list.insertAdjacentHTML("beforeend", html); }
+    else list.innerHTML = html;
+    if (data.next_offset != null) list.insertAdjacentHTML("beforeend", `<button class="file-entry" type="button" data-files-more="${data.next_offset}">Show more files</button>`);
+  } catch (err) { if (request === folderRequest) list.textContent = `Could not open folder: ${err.message}`; }
 }
 
 async function openFile(path) {
   const preview = $("file-preview");
+  const request = ++fileRequest;
   document.querySelectorAll(".file-entry").forEach(entry => entry.classList.toggle("active", entry.dataset.file === path));
   preview.textContent = "Loading…";
   try {
     const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {cache: "no-store"});
     const data = await response.json();
+    if (request !== fileRequest) return;
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-    preview.innerHTML = `<h3>${esc(path)}</h3><a href="/api/file?path=${encodeURIComponent(path)}&download=1">Download</a>${data.binary ? `<p class="empty">Binary file · ${Math.ceil(data.size / 1024)} KiB. Download to view it.</p>` : `<pre>${esc(data.text)}</pre>${data.truncated ? `<p class="dim">Preview limited to 128 KiB. Download for the full file.</p>` : ""}`}`;
-  } catch (err) { preview.textContent = `Could not open file: ${err.message}`; }
+    preview.innerHTML = `<h3>${esc(path)}</h3><a href="/api/file?path=${encodeURIComponent(path)}&download=1">Download</a>${data.image_mime ? `<img src="/api/file?path=${encodeURIComponent(path)}&view=1" alt="${esc(path)}">` : data.binary ? `<p class="empty">Binary file · ${Math.ceil(data.size / 1024)} KiB. Download to view it.</p>` : `<pre>${esc(data.text)}</pre>${data.truncated ? `<p class="dim">Preview limited to 128 KiB. Download for the full file.</p>` : ""}`}`;
+  } catch (err) { if (request === fileRequest) preview.textContent = `Could not open file: ${err.message}`; }
 }
 
 function showMemberTab(tab) {
@@ -474,6 +513,61 @@ function jumpToLatest() {
   $("jump-latest").hidden = true;
 }
 
+function showAttention() {
+  showTab("overview");
+  $("room-attention").scrollIntoView({behavior: "smooth", block: "center"});
+}
+
+async function enableMentionAlerts() {
+  if (mentionAlerts) {
+    mentionAlerts = false;
+    try { localStorage.setItem("hive-mention-alerts", "false"); } catch (_) {}
+    $("mention-alerts").textContent = "Enable mention alerts";
+    $("attention-status").textContent = "Desktop alerts disabled. Mentions still appear in For you.";
+    return;
+  }
+  if (!("Notification" in window) || !window.isSecureContext) {
+    $("attention-status").textContent = "Desktop alerts need HTTPS or localhost. Mentions still appear in For you.";
+    return;
+  }
+  try {
+    mentionAlerts = await Notification.requestPermission() === "granted";
+    try { localStorage.setItem("hive-mention-alerts", String(mentionAlerts)); } catch (_) {}
+    $("attention-status").textContent = mentionAlerts ? "Desktop alerts enabled for @beekeeper." : "Desktop alerts are blocked by your browser. Mentions still appear in For you.";
+    $("mention-alerts").textContent = mentionAlerts ? "Disable mention alerts" : "Enable mention alerts";
+  } catch (_) { $("attention-status").textContent = "Could not enable desktop alerts. Mentions still appear in For you."; }
+}
+
+function renderAttention(d) {
+  const posts = d.beekeeper_mentions || [];
+  const key = JSON.stringify(posts);
+  $("attention-link").hidden = posts.length === 0;
+  $("attention-link").textContent = `For you · ${posts.length}`;
+  document.title = posts.length ? `Hive · ${posts.length} for you` : "Hive";
+  if (key !== attentionKey) {
+    $("room-attention").hidden = posts.length === 0;
+    $("room-attention").innerHTML = posts.map(post => `<div class="attention-item">
+      <b>${post.question ? "Question for you" : "For you"} · ${esc(post.member)}</b>
+      <p>${esc(post.body.replace(/^> Reply to [^\n]*\n\n/, ""))}</p>
+      <button type="button" data-reply-gen="${post.gen}">${post.question ? "Answer" : "Reply"} · Room #${post.gen}</button>
+    </div>`).join("");
+    attentionKey = key;
+  }
+  const fresh = lastGen === null ? [] : posts.filter(post => post.gen > lastGen);
+  if (fresh.length) $("attention-status").textContent = `${fresh.map(post => post.member).join(", ")} mentioned @beekeeper. Open For you to reply.`;
+  if (mentionAlerts && "Notification" in window && Notification.permission === "granted") {
+    $("mention-alerts").textContent = "Disable mention alerts";
+    for (const post of fresh) {
+      try {
+        const notification = new Notification(`${post.member} · ${post.question ? "Question for you" : "@beekeeper"}`, {
+          body: post.body.replace(/^> Reply to [^\n]*\n\n/, "").slice(0, 240), tag: `hive-room-${post.gen}`
+        });
+        notification.onclick = () => { window.focus(); startReply(post.gen); notification.close(); };
+      } catch (_) {} // In-page attention remains available when desktop alerts are unavailable.
+    }
+  }
+}
+
 function renderRoom(entries, members) {
   const list = $("room");
   const key = entries.map(e => e.gen).join(",");
@@ -488,14 +582,15 @@ function renderRoom(entries, members) {
   }
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 2;
   const oldTop = list.scrollTop;
-  const known = new Set(["all", ...members.map(m => m.member)]);
+  const known = new Set(["all", "beekeeper", ...members.map(m => m.member)]);
+  const forYou = new Set((dashboardData?.beekeeper_mentions || []).map(post => post.gen));
   const fresh = lastGen === null ? 0 : entries.filter(e => e.gen > lastGen).length;
   list.innerHTML = entries.length ? entries.map(e => {
     const mine = e.member === "beekeeper";
     const hue = senderHue(e.member);
     const role = mine ? "You · Beekeeper" : (identities.get(e.member) || "member");
     const initials = mine ? "YOU" : e.member.split(/[-_.]/).map(p => p[0] || "").join("").slice(0, 3).toUpperCase();
-    return `<article class="e${mine ? " mine" : ""}${lastGen !== null && e.gen > lastGen ? " new" : ""}"
+    return `<article id="room-entry-${e.gen}" class="e${mine ? " mine" : ""}${lastGen !== null && e.gen > lastGen && forYou.has(e.gen) ? " new" : ""}"
       style="--sender-hue:${hue}">
       <div class="avatar" aria-hidden="true">${esc(initials)}</div><div class="content">
         <div class="h">${mine ? `<span class="who">${esc(e.member)}</span>` : `<button class="who" type="button" data-room-member="${esc(e.member)}" title="Show ${esc(e.member)} in Members">${esc(e.member)}</button>`}
@@ -520,7 +615,7 @@ function render(d) {
   $("host-name").textContent = h.hostname + " · " + d.hive_root;
   $("gen").textContent = d.generation;
   $("updated").textContent = new Date(d.now).toLocaleTimeString();
-  document.title = `Hive · ${d.members.filter(m => m.state === "working").length} working · gen ${d.generation}`;
+  renderAttention(d);
 
   $("cpu").textContent = h.cpu_percent == null ? "–" : h.cpu_percent + "%"; bar("cpu-bar", h.cpu_percent || 0);
   $("mem").textContent = `${gib(h.mem_used)} / ${gib(h.mem_total)} GiB`; bar("mem-bar", 100 * h.mem_used / h.mem_total);
@@ -552,7 +647,7 @@ function render(d) {
     : `<div class="empty">No active claims.</div>`;
 
   $("projects").innerHTML = d.projects.length ? d.projects.map(p => `
-    <div class="project"><div class="project-head"><b>${esc(p.name)}</b><span class="dim">${esc(p.branch)}</span></div>
+    <div class="project"><div class="project-head"><b>${esc(p.name)}</b><span class="dim">${esc(p.branch)}</span>${p.path.startsWith(d.hive_root + "/projects/") ? `<button class="top-action" data-project-folder="${esc(p.path.slice(d.hive_root.length + 1))}">Explore files</button>` : ""}</div>
       <div class="project-path">${esc(p.path)}</div>
       <div class="project-state">${p.staged == null ? `<span>Status unavailable</span>` : `<span>${p.staged} staged</span><span>${p.modified} modified</span><span>${p.untracked} untracked</span>`}${p.ahead != null ? `<span>↑ ${p.ahead} ahead</span><span>↓ ${p.behind} behind</span>` : ""}</div>
       ${p.commit ? `<div class="commit"><span class="h">${esc(p.commit.hash)}</span> ${esc(p.commit.subject)} <span class="dim">· ${ago(p.commit.date)}</span></div>` : `<span class="empty">No commits yet.</span>`}
@@ -609,14 +704,52 @@ async function sendMemberAction(button) {
 
 function updateRecipients() {
   const text = $("room-message").value;
-  const names = new Set([...text.matchAll(/@([a-z0-9][a-z0-9._-]{0,63})/g)].map(m => m[1].replace(/[.,;:]+$/, "")));
-  const known = new Set((dashboardData?.members || []).map(m => m.member));
+  const names = new Set([...text.matchAll(/(?<![a-zA-Z0-9_./@-])@([a-z0-9][a-z0-9._-]{0,63})/g)].map(m => m[1].replace(/[.,;:]+$/, "")));
+  const known = new Set(["beekeeper", ...(dashboardData?.members || []).map(m => m.member)]);
   const unknown = [...names].filter(name => name !== "all" && !known.has(name));
   const preview = $("room-recipients");
   if (unknown.length) preview.innerHTML = `<span class="feedback error">Unknown member: ${unknown.map(name => `@${esc(name)}`).join(", ")}</span>`;
   else if (names.has("all")) preview.innerHTML = "Sending a prompt to <b>@all</b> members";
-  else if (names.size) preview.innerHTML = `Sending a prompt to ${[...names].map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
+  else if ([...names].some(name => name !== "beekeeper")) preview.innerHTML = `Sending a prompt to ${[...names].filter(name => name !== "beekeeper").map(name => `<b>@${esc(name)}</b>`).join(", ")}`;
+  else if (names.has("beekeeper")) preview.textContent = "@beekeeper · You · Room only";
   else preview.textContent = "Room only · mention a member to send them a prompt";
+}
+
+function hideMentionOptions() {
+  mentionCompletion = null;
+  $("mention-options").hidden = true;
+  $("room-message").setAttribute("aria-expanded", "false");
+  $("room-message").removeAttribute("aria-activedescendant");
+}
+
+function updateMentionOptions() {
+  const field = $("room-message");
+  if (document.activeElement !== field || field.selectionStart !== field.selectionEnd) return hideMentionOptions();
+  const before = field.value.slice(0, field.selectionStart);
+  const token = /(?:^|[^a-zA-Z0-9_./@-])@([a-z0-9._-]*)$/i.exec(before);
+  if (!token) return hideMentionOptions();
+  const names = [...new Set([...(dashboardData?.members || []).map(m => m.member), "all", "beekeeper"])];
+  const options = names.filter(name => name.startsWith(token[1].toLowerCase()));
+  if (!options.length) return hideMentionOptions();
+  const start = field.selectionStart - token[1].length - 1;
+  const tail = /^[a-z0-9._-]*/i.exec(field.value.slice(field.selectionStart))[0];
+  if (mentionCompletion?.start !== start || mentionCompletion?.query !== token[1]) mentionIndex = 0;
+  mentionIndex = Math.min(mentionIndex, options.length - 1);
+  mentionCompletion = {start, end: field.selectionStart + tail.length, query: token[1], options};
+  $("mention-options").innerHTML = options.map((name, index) => `<button type="button" id="mention-option-${index}" role="option" aria-selected="${index === mentionIndex}" data-complete-mention="${esc(name)}">@${esc(name)}<small>${name === "all" ? "All members" : name === "beekeeper" ? "You" : esc(dashboardData?.members.find(m => m.member === name)?.state || "member")}</small></button>`).join("");
+  $("mention-options").hidden = false;
+  field.setAttribute("aria-expanded", "true");
+  field.setAttribute("aria-activedescendant", `mention-option-${mentionIndex}`);
+  $("mention-option-" + mentionIndex)?.scrollIntoView({block: "nearest"});
+}
+
+function completeMention(name) {
+  if (!mentionCompletion) return;
+  const field = $("room-message");
+  field.setRangeText(`@${name} `, mentionCompletion.start, mentionCompletion.end, "end");
+  hideMentionOptions();
+  updateRecipients();
+  field.focus();
 }
 
 function insertMention(name) {
@@ -626,6 +759,7 @@ function insertMention(name) {
   const prefix = start > 0 && !/\s/.test(field.value[start - 1]) ? " " : "";
   field.setRangeText(`${prefix}@${name} `, start, end, "end");
   updateRecipients();
+  hideMentionOptions();
   field.focus();
 }
 
@@ -638,8 +772,9 @@ function focusMember(name) {
 }
 
 function startReply(gen) {
-  const post = dashboardData?.room.find(e => e.gen === Number(gen));
+  const post = dashboardData?.room.find(e => e.gen === Number(gen)) || dashboardData?.beekeeper_mentions?.find(e => e.gen === Number(gen));
   if (!post) return;
+  showTab("overview");
   const excerpt = post.body.replace(/^> Reply to [^\n]*\n\n/, "").replace(/\s+/g, " ").replace(/@/g, "").slice(0, 120);
   replyTo = {gen: post.gen, member: post.member, excerpt};
   $("reply-context").textContent = `Replying to ${post.member} · Room #${post.gen}: ${excerpt}`;
@@ -673,6 +808,7 @@ async function sendRoomMessage() {
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
     field.value = "";
+    hideMentionOptions();
     cancelReply();
     updateRecipients();
     const failures = Object.entries(data.failed || {});
@@ -692,6 +828,9 @@ document.addEventListener("click", async e => {
   if (!b) return;
   if (b.dataset.tab) return showTab(b.dataset.tab);
   if (b.dataset.memberTab) return showMemberTab(b.dataset.memberTab);
+  if (b.dataset.completeMention) return completeMention(b.dataset.completeMention);
+  if (b.dataset.filesMore) return openFolder(currentFolder, Number(b.dataset.filesMore));
+  if (b.dataset.projectFolder) { filesLoaded = true; showTab("files"); return openFolder(b.dataset.projectFolder); }
   if (b.dataset.folder !== undefined) return openFolder(b.dataset.folder);
   if (b.dataset.file) return openFile(b.dataset.file);
   if (b.dataset.roomMember) return focusMember(b.dataset.roomMember);
@@ -710,9 +849,22 @@ document.addEventListener("click", async e => {
   }
 });
 $("room-message").addEventListener("keydown", e => {
+  if (e.isComposing) return;
+  if (mentionCompletion && !e.shiftKey && ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(e.key)) {
+    e.preventDefault(); e.stopPropagation();
+    if (e.key === "Escape") return hideMentionOptions();
+    if (e.key === "Enter" || e.key === "Tab") return completeMention(mentionCompletion.options[mentionIndex]);
+    mentionIndex = (mentionIndex + (e.key === "ArrowDown" ? 1 : -1) + mentionCompletion.options.length) % mentionCompletion.options.length;
+    updateMentionOptions();
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendRoomMessage(); }
 });
-$("room-message").addEventListener("input", updateRecipients);
+$("room-message").addEventListener("input", () => { updateRecipients(); updateMentionOptions(); });
+$("room-message").addEventListener("click", updateMentionOptions);
+$("room-message").addEventListener("keyup", e => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) updateMentionOptions(); });
+$("room-message").addEventListener("blur", hideMentionOptions);
+$("mention-options").addEventListener("pointerdown", e => e.preventDefault());
 $("room").addEventListener("scroll", () => {
   const list = $("room");
   if (list.scrollHeight - list.scrollTop - list.clientHeight < 2) {

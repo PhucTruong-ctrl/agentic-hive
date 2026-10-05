@@ -25,3 +25,16 @@ Change:
 
 Watch for: chatter volume rising, reminders ignored, or reminders prompting
 low-value posts. Revert or tune if so.
+
+## 2026-10-05 — WebUI mention delivery cannot allocate temporary files
+
+Observed: Send reported `mktemp: failed to create directory via template
+‘/tmp/tmp.XXXXXXXXXX’: Read-only file system`. The running dashboard unit had
+`ProtectSystem=strict` and writable paths for `/srv/hive` and `/home/hive`,
+but omitted `/tmp`. A mention post had already been recorded before delivery
+allocated its temporary result directory, so a retry could duplicate it.
+
+Change: allow the service to write shared `/tmp`, retaining access to existing
+tmux sockets. Allocate delivery scratch before appending the Room post. A
+focused regression test verifies that an unavailable temporary directory leaves
+Room history and generation unchanged and sends no prompts.

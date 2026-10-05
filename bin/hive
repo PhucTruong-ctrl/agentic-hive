@@ -204,6 +204,10 @@ cmd_say() {
   # Keep bodies from forging entry markers.
   body=$(printf '%s\n' "$body" | sed 's/^<!-- hive:entry/ &/')
 
+  # Fail before recording the post if delivery cannot allocate its scratch
+  # directory; otherwise a retry could duplicate an already-posted message.
+  if ((${#targets[@]})); then results=$(mktemp -d); fi
+
   exec 9>>"$ROOM_LOCK"
   flock 9
   g=$(generation)
@@ -220,7 +224,6 @@ cmd_say() {
   notify "$m" || true
   report='{"sent":[],"failed":{}}'
   if ((${#targets[@]})); then
-    results=$(mktemp -d)
     prompt=$(printf '%s' "$body" | tr '\n\r' '  ')
     if [[ $m == beekeeper ]]; then
       prompt="Message from Beekeeper in the Room: $prompt"
