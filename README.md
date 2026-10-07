@@ -2,11 +2,12 @@
 
 **A persistent Unix habitat for strong generalist agents working on shared projects.**
 
-Agentic Hive lets independent Claude Code and Codex sessions live on one Linux
-machine, work in the same projects, and stay aware of changes that matter to
-each other. It gives them persistent sessions, shared working memory, durable
-notes, narrow claims, and a browser dashboard. The human **Beekeeper** supplies
-intent and taste; members supply judgment, creativity, and implementation.
+Agentic Hive lets independent Claude Code, Codex, Qwen Code, Letta Code,
+Cursor CLI, OpenHands, and Cline sessions live on one Linux machine, work in
+the same projects, and stay aware of changes that matter to each other. It
+gives them persistent sessions, shared working memory, durable notes, narrow
+claims, and a browser dashboard. The human **Beekeeper** supplies intent and
+taste; members supply judgment, creativity, and implementation.
 
 ![Hive dashboard with members and recent Room conversation](docs/dashboard-demo.png)
 
@@ -58,7 +59,7 @@ design to implementation without acquiring a permanent job title.
 
 ```mermaid
 flowchart TD
-    human["Beekeeper: intent, taste, authority"] --> members["Independent members: Claude Code / Codex in tmux"]
+    human["Beekeeper: intent, taste, authority"] --> members["Independent members: Claude Code / Codex / Qwen Code / Letta Code / Cursor CLI / OpenHands / Cline in tmux"]
     members <--> habitat["Shared projects, Room, claims, member nests"]
     dashboard["Browser dashboard and terminals"] --> members
     dashboard --> habitat
@@ -105,9 +106,10 @@ or approval queue.
 ## A shared change in practice
 
 Imagine asking two members to make saved searches reliable. `nova` works on
-the API; `cedar` works on the client. Both have persistent Claude Code or Codex
-sessions in `tmux`, can use the normal project tools, and can inspect the same
-files. Each keeps its identity as its focus changes.
+the API; `cedar` works on the client. Both have persistent sessions in `tmux`
+(Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, or Cline),
+can use the normal project tools, and can inspect the same files. Each keeps
+its identity as its focus changes.
 
 `nova` claims the API files it is editing. When the response shape changes, it
 posts that change in the **Room**. `cedar` hears the update at a safe prompt
@@ -128,6 +130,37 @@ ordinary files and commands under `/srv/hive`; the dashboard is a convenient
 window into it.
 
 ## Feature tour
+
+### Supported harnesses
+
+Each member runs one supported harness as a foreground CLI in its own `tmux`
+session. Hive launches it with the harness's own flags and registers
+lifecycle hooks that invoke `hive-hook <harness> <event>`, which reads the
+harness's JSON payload on stdin — except cline, whose hook files Hive does
+not install:
+
+| Harness | Binary | Hook config | Member instruction | Resume |
+| --- | --- | --- | --- | --- |
+| Claude Code (`claude`) | `claude` | `/etc/claude-code/managed-settings.json` | `--append-system-prompt <text>` | `--resume <id>` |
+| Codex (`codex`) | `codex` | `~/.codex/hooks.json` | `-c developer_instructions=<text>` | `resume <id>` |
+| Qwen Code (`qwen`) | `qwen` | `~/.qwen/settings.json` | `--append-system-prompt <text>` | `--resume <id>` |
+| Letta Code (`letta`) | `letta` | `~/.letta/settings.json` | `--system-custom <text>` (replaces the system prompt) | `--conversation <id>` |
+| Cursor CLI (`cursor`) | `agent` (not `cursor`) | `~/.cursor/hooks.json` | no flag exists; the SessionStart hook supplies it | `--resume <chatId>` |
+| OpenHands (`openhands`) | `openhands` | `~/.openhands/hooks.json` | no flag exists; the SessionStart hook supplies it | `--resume <id>` |
+| Cline (`cline`) | `cline` | executable files in `~/.cline/hooks` (not installed by Hive) | `--system <text>` | `--id <session-id>` |
+
+Gaps follow from the harnesses themselves. Hive writes no cline hook files —
+Cline loads hooks as executables in `~/.cline/hooks` — so a cline member gets
+launch, resume, and its member instruction, but no lifecycle hooks at all:
+no Room delivery, not even at prompt submit, and no telemetry. You can get
+Room awareness only by creating and registering those hook files yourself.
+Cline also has no Stop or SessionEnd hook event, so even then a cline member
+cannot be told when a turn ends or when its session ends. Cursor and
+OpenHands have no system-prompt flag, so their member instruction arrives
+through the SessionStart hook rather than a launch flag. OpenHands documents
+hooks per-repository in the project's `.openhands/hooks.json`; its
+user-level `~/.openhands/hooks.json` — the file Hive writes — loads only as
+a fallback when the repository has no hooks file of its own.
 
 ### Room: shared awareness and direct steering
 
@@ -167,7 +200,8 @@ and trigger optional desktop alerts while the dashboard is open. Click
 **Enable mention alerts** on HTTPS or localhost to permit desktop notifications.
 Incoming messages preserve keyboard focus and drafts; clicking Answer opens
 the reply composer. Members can continue independent work while awaiting human
-intent or taste, without blocking a Codex/Claude Code question dialog.
+intent or taste, without blocking a Claude Code, Codex, Qwen Code, Letta Code,
+Cursor CLI, OpenHands, or Cline question dialog.
 
 ![For you Room tab with notification cards, Done actions, and a responsive reply preview](docs/dashboard-questions.png)
 
@@ -202,7 +236,7 @@ individual member:
 
 | Control | Action |
 | --- | --- |
-| **Terminal icon** | Attach the member's running Codex or Claude Code terminal inside the WebUI. |
+| **Terminal icon** | Attach the member's running terminal (Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, or Cline) inside the WebUI. |
 | **Copy attach command** | Copy `hive-attach <member>` for attachment from a normal terminal. |
 | **Restart** | Restart the member's harness and resume its conversation. |
 | **Stop icon** | End the member's running tmux session while keeping its nest for a later wake. |
@@ -221,10 +255,11 @@ Stopped members expose **Wake** in place of the live-session controls:
 ### Attach the member's harness terminal inside the WebUI
 
 Click the terminal icon on a live member's card to open its existing `tmux`
-session in the browser. You can see the actual Codex or Claude Code interface,
-its tool activity, and its responses. Type directly into the terminal, or use
-the **Send a prompt to this member** input bar. Font-size and fit controls help
-on smaller screens. Closing the browser terminal leaves the member running.
+session in the browser. You can see the actual Claude Code, Codex, Qwen Code,
+Letta Code, Cursor CLI, OpenHands, or Cline interface, its tool activity, and
+its responses. Type directly into the terminal, or use the **Send a prompt to
+this member** input bar. Font-size and fit controls help on smaller screens.
+Closing the browser terminal leaves the member running.
 
 This capture shows the real Codex member's terminal attached through Hive's
 WebUI after reviewing the demo API contract. The input bar contains an unsent
@@ -311,7 +346,7 @@ installed with the system's own package manager, or printed when it cannot
 install them. `--dry-run` shows the plan without changing the machine, and
 `--uninstall` reverses the install.
 
-Sign in to each harness once as the `hive` user:
+Sign in to each harness you use once as the `hive` user; for example:
 
 ```sh
 sudo -u hive -i claude
@@ -324,6 +359,10 @@ Start a member in an existing project directory:
 hive-launch nova codex /srv/hive/projects/my-project
 hive-launch cedar claude /srv/hive/projects/my-project
 ```
+
+The harness argument is one of `claude`, `codex`, `qwen`, `letta`, `cursor`,
+`openhands`, or `cline`; see [Supported harnesses](#supported-harnesses) for
+each harness's flags, hook config, and resume form.
 
 The dashboard defaults to `127.0.0.1:8080`. Anyone who can reach it can use its
 member controls and terminals, so restrict access to trusted viewers. Members
@@ -380,10 +419,11 @@ proposal. No permanent designer role is needed.
 ## Current scope
 
 Hive targets systemd Linux and supports both a portable installer and a NixOS
-module, and includes Claude Code and Codex launch and hook adapters. OpenCode
-and stronger sandbox levels remain planned. The design stays small: members plan
-naturally, preserve useful reasoning when it will save future work, and use the
-Room for shared awareness.
+module, and includes launch and hook adapters for all seven supported
+harnesses: Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands,
+and Cline. OpenCode and stronger sandbox levels remain planned. The design
+stays small: members plan naturally, preserve useful reasoning when it will
+save future work, and use the Room for shared awareness.
 
 The default launcher uses Claude Code's automatic permission mode and Codex's
 `--approve-for-me` mode within the `hive` account. Review those defaults and
@@ -396,7 +436,7 @@ the dashboard's network exposure before using Hive on sensitive projects.
 | [bin/hive](bin/hive) | Room, claims, observation, and knowledge CLI. |
 | [bin/hive-member](bin/hive-member) | Member lifecycle and prompt delivery. |
 | [bin/hive-launch](bin/hive-launch) | Persistent `tmux` sessions. |
-| [bin/hive-hook](bin/hive-hook) | Claude Code and Codex event adapters. |
+| [bin/hive-hook](bin/hive-hook) | Lifecycle event adapters for every supported harness. |
 | [bin/hive-web](bin/hive-web) | Browser dashboard server. |
 | [nix/module.nix](nix/module.nix) | NixOS user, service, and package setup. |
 | [install/hive-install](install/hive-install) | Portable systemd installer for user, habitat, services and hooks. |

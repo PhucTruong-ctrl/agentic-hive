@@ -881,7 +881,24 @@ Semantic response happens only when useful.
 
 ### 12.5 Harness-specific adapters
 
-Implement adapters separately for Claude Code, Codex, and OpenCode.
+Adapters are table-driven, not separate implementations: `harness_fact
+<harness> <fact>` in [share/harness.sh](share/harness.sh) supplies each
+harness's executable, prompt flag, resume form, hook config, and event names,
+and `harness_list` enumerates the supported set — Claude Code, Codex, Qwen
+Code, Letta Code, Cursor CLI, OpenHands, and Cline.
+
+Gaps follow from the harnesses themselves. Hive does not install cline's
+hook files — they are executables under `~/.cline/hooks` with no verified
+file-invocation convention — so a cline member gets launch, resume, and its
+member instruction, but no lifecycle hooks at all: no Room delivery, not even
+at prompt submit, and no telemetry, unless the user creates and registers the
+files. Cline additionally exposes no Stop or SessionEnd hook event, so even
+with hooks registered a cline member cannot be told when a turn or session
+ends. Cursor and OpenHands have no system-prompt flag, so their member
+instruction rides the SessionStart hook instead of a launch flag. OpenHands
+reads hooks from the repository's `.openhands/hooks.json` first and only
+falls back to the user-level `~/.openhands/hooks.json` Hive writes when the
+repository has none.
 
 Use their native lifecycle/tool hooks when available.
 

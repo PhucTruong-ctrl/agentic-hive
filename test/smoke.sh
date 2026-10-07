@@ -103,6 +103,28 @@ check "telemetry written" test "$(jq -r .status "$HIVE_ROOT/telemetry/members/ca
 CODEX_HOME="$HIVE_ROOT/cx" HIVE_MEMBER=bob hive-hook codex Stop <<<'{"cwd":"/tmp"}' >/dev/null
 check "codex telemetry harness" test "$(jq -r .harness "$HIVE_ROOT/telemetry/members/bob.json")" = codex
 
+# New harness payload fields normalize to the same cwd/prompt inputs.
+hive join finn >/dev/null
+HIVE_MEMBER=finn hive-hook openhands UserPromptSubmit <<<'{"working_dir":"/tmp/oh-work","message":"openhands prompt text"}' >/dev/null
+check "openhands cwd from working_dir" test "$(jq -r .cwd "$HIVE_ROOT/telemetry/members/finn.json")" = /tmp/oh-work
+check "openhands prompt receipt from message" test "$(cut -d' ' -f2 "$HIVE_ROOT/members/finn/state/last-submitted-prompt")" = "$(printf '%s' 'openhands prompt text' | sha256sum | cut -d' ' -f1)"
+HIVE_MEMBER=finn hive-hook letta UserPromptSubmit <<<'{"working_directory":"/tmp/letta-work","prompt":"letta prompt text"}' >/dev/null
+check "letta cwd from working_directory" test "$(jq -r .cwd "$HIVE_ROOT/telemetry/members/finn.json")" = /tmp/letta-work
+check "letta prompt receipt" test "$(cut -d' ' -f2 "$HIVE_ROOT/members/finn/state/last-submitted-prompt")" = "$(printf '%s' 'letta prompt text' | sha256sum | cut -d' ' -f1)"
+
+# Each harness gets its own output shape on the wire.
+for h in claude qwen letta cursor; do
+  out=$(HIVE_MEMBER=finn hive-hook "$h" SessionStart <<<'{}')
+  check "$h emits hookSpecificOutput.additionalContext" bash -c 'jq -r .hookSpecificOutput.additionalContext <<<"$1" | grep -q "member: finn"' _ "$out"
+  check "$h output is only hookSpecificOutput" jq -e 'keys == ["hookSpecificOutput"]' <<<"$out"
+done
+out=$(HIVE_MEMBER=finn hive-hook openhands SessionStart <<<'{}')
+check "openhands emits top-level additionalContext" bash -c 'jq -r .additionalContext <<<"$1" | grep -q "member: finn"' _ "$out"
+check "openhands output is only additionalContext" jq -e 'keys == ["additionalContext"]' <<<"$out"
+out=$(HIVE_MEMBER=finn hive-hook cline SessionStart <<<'{}')
+check "cline emits contextModification" bash -c 'jq -r .contextModification <<<"$1" | grep -q "member: finn"' _ "$out"
+check "cline output is only contextModification" jq -e 'keys == ["contextModification"]' <<<"$out"
+
 # Hook is a no-op outside Hive.
 check "hook silent without member" test -z "$(HIVE_MEMBER= hive-hook claude PostToolUse <<<'{}')"
 

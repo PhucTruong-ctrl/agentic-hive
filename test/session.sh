@@ -176,11 +176,52 @@ printf 'codex %s\n' "$*" >>"$HIVE_TEST_LOG"
 EOF
 chmod +x "$tmp/bin/claude" "$tmp/bin/codex"
 printf 'member instruction\n' >"$tmp/share/member-instruction.md"
+cp "$repo/share/harness.sh" "$tmp/share/harness.sh"
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run claude 'first task' </dev/null >/dev/null
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run codex 'first task' </dev/null >/dev/null
 rg -q '^claude --permission-mode auto .*first task$' "$HIVE_TEST_LOG"
 rg -q '^codex --approve-for-me --add-dir '"$HIVE_ROOT"' .*first task$' "$HIVE_TEST_LOG"
 printf 'autonomous launch flags applied\n'
+
+for b in qwen letta agent openhands cline; do
+  cat >"$tmp/bin/$b" <<EOF
+#!/usr/bin/env bash
+printf '$b %s\n' "\$*" >>"\$HIVE_TEST_LOG"
+EOF
+  chmod +x "$tmp/bin/$b"
+done
+: >"$HIVE_TEST_LOG"
+for h in qwen letta cursor openhands cline; do
+  HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run "$h" 'first task' </dev/null >/dev/null
+done
+rg -q '^qwen --append-system-prompt .*first task$' "$HIVE_TEST_LOG"
+rg -q '^letta --system-custom .*first task$' "$HIVE_TEST_LOG"
+rg -q '^agent first task$' "$HIVE_TEST_LOG"
+rg -q '^openhands first task$' "$HIVE_TEST_LOG"
+rg -q '^cline --system .*first task$' "$HIVE_TEST_LOG"
+printf 'new harness launch flags applied\n'
+
+for h in claude codex qwen letta cursor openhands cline; do
+  case $h in
+    codex) flag=resume ;;
+    letta) flag=--conversation ;;
+    cline) flag=--id ;;
+    *) flag=--resume ;;
+  esac
+  printf '%s\n' '{"harness":"'"$h"'","dir":"'"$HIVE_ROOT"'/projects"}' >"$HIVE_ROOT/members/bob/state/launch.json"
+  printf '%s\n' '{"session_id":"test-session","harness":"'"$h"'"}' >"$HIVE_ROOT/telemetry/members/bob.json"
+  : >"$HIVE_TEST_LOG"
+  "$repo/bin/hive-member" send bob "resume $h" >/dev/null
+  rg -q "^launch bob $h .* -- $flag test-session resume $h\$" "$HIVE_TEST_LOG"
+done
+printf 'every harness resumes its recorded conversation\n'
+
+printf '%s\n' '{"harness":"qwen","dir":"'"$HIVE_ROOT"'/projects"}' >"$HIVE_ROOT/members/bob/state/launch.json"
+printf '%s\n' '{"harness":"qwen"}' >"$HIVE_ROOT/telemetry/members/bob.json"
+: >"$HIVE_TEST_LOG"
+"$repo/bin/hive-member" send bob 'start a fresh task' >/dev/null
+rg -q '^launch bob qwen .* -- start a fresh task$' "$HIVE_TEST_LOG"
+printf 'member without a session id launches without a resume argument\n'
 
 mkdir -p "$HIVE_ROOT/members/bob/notes" "$HIVE_ROOT/claims/demo"
 printf 'keep work here\n' >"$HIVE_ROOT/members/bob/notes/work.md"

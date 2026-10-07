@@ -41,6 +41,7 @@ HIVE_ROOT = Path(os.environ.get("HIVE_ROOT", "/srv/hive"))
 SHARE = Path(os.environ.get("HIVE_SHARE") or Path(__file__).resolve().parent.parent / "share/agentic-hive")
 if not (SHARE / "dashboard.html").is_file():  # plain git checkout ships share/ directly
     SHARE = Path(__file__).resolve().parent.parent / "share"
+HARNESS_EXE = {}  # harness -> executable name; cursor ships a binary named `agent`
 WORKING_WINDOW = 120  # seconds of inactivity before "working" becomes "idle"
 ROOM_TAIL_BYTES = 512 * 1024
 ROOM_ENTRIES = 40
@@ -367,15 +368,41 @@ def host():
     }
 
 
+def harness_exe(harness):
+    """Executable name for a harness via share/harness.sh; raw name on any failure.
+
+    Cached per harness because alive() runs for every pane on every state build.
+    """
+    if not isinstance(harness, str):
+        return harness  # alive() keeps its old raw-name behavior for corrupt telemetry
+    if harness not in HARNESS_EXE:
+        exe = harness
+        try:
+            # Names stay argv (never interpolated), and the table is optional: an old
+            # install without share/harness.sh keeps comparing against the raw name.
+            if re.fullmatch(r"[a-z0-9._-]+", harness) and (SHARE / "harness.sh").is_file():
+                result = subprocess.run(["bash", "-c", 'source "$1"; harness_fact "$2" exe', "_",
+                                         str(SHARE / "harness.sh"), harness],
+                                        capture_output=True, text=True, timeout=3)
+                value = result.stdout.strip()
+                if result.returncode == 0 and value:
+                    exe = value
+        except Exception:
+            pass  # liveness is a hint; the fact table must never take the dashboard down
+        HARNESS_EXE[harness] = exe
+    return HARNESS_EXE[harness]
+
+
 def alive(pid, harness):
     if not isinstance(pid, int) or pid <= 1:
         return False
     comm = read(f"/proc/{pid}/comm")
     if not harness:
         return False
-    if comm.startswith(harness) or comm.startswith("." + harness):
+    exe = harness_exe(harness)  # matching only; telemetry and the UI keep the harness name
+    if comm.startswith(exe) or comm.startswith("." + exe):
         return True
-    return comm.startswith("node") and f"/{harness}" in read(f"/proc/{pid}/cmdline")
+    return comm.startswith("node") and f"/{exe}" in read(f"/proc/{pid}/cmdline")
 
 
 def member_panes():

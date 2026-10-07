@@ -163,6 +163,35 @@ if [[ $2 == ${HIVE_TEST_UNCONFIRMED_MEMBER:-} ]]; then echo 'submission unconfir
             alice = next(m for m in web.members(0, 0, []) if m["member"] == "alice")
         self.assertEqual((alice["state"], alice["pid"]), ("idle", 101))
 
+    def test_alive_resolves_harness_to_its_executable(self):
+        share = self.root / "share"
+        share.mkdir()
+        (share / "harness.sh").write_text('harness_fact() { [ "$1" = cursor ] && [ "$2" = exe ] && echo agent; }\n')
+        values = {"/proc/50/comm": "agent"}
+        with patch.object(web, "SHARE", share), \
+             patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
+            self.assertTrue(web.alive(50, "cursor"))
+
+    def test_alive_matches_the_plain_harness_name(self):
+        values = {"/proc/51/comm": "claude"}
+        with patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
+            self.assertTrue(web.alive(51, "claude"))
+
+    def test_alive_falls_back_when_the_fact_lookup_fails(self):
+        # An old install has no share/harness.sh; the raw name must still match.
+        values = {"/proc/52/comm": "qwen"}
+        with patch.object(web, "SHARE", self.root / "no-share"), \
+             patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
+            self.assertTrue(web.alive(52, "qwen"))
+        # A table bash cannot load must not break liveness either.
+        share = self.root / "share"
+        share.mkdir()
+        (share / "harness.sh").write_text("exit 1\n")
+        values = {"/proc/53/comm": "cline"}
+        with patch.object(web, "SHARE", share), \
+             patch.object(web, "read", side_effect=lambda path, default="": values.get(str(path), default)):
+            self.assertTrue(web.alive(53, "cline"))
+
     def test_cross_origin_command_is_rejected(self):
         with patch.object(web, "run_hive") as run:
             status, _ = self.request("/api/member", {"member": "alice", "action": "kill"}, "http://other.site")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hive-launch — start or attach a persistent member session in tmux.
 #
-#   hive-launch <member> [claude|codex] [dir] [-- harness args...]
+#   hive-launch <member> [harness] [dir] [-- harness args...]
 #   hive-launch --list
 #
 # Members run as the `hive` account. When invoked by another user (the
@@ -19,25 +19,76 @@ if [[ $(id -un) != "$HIVE_USER" ]]; then
   exec sudo -u "$HIVE_USER" -i -- hive-launch "$@"
 fi
 
-# Codex reads user-level hooks from ~/.codex/hooks.json. Prefer the host-managed
-# CLI directory so the file (and Codex's trust hash for it) stays stable across
-# host updates; fall back to whatever hive-hook is on PATH.
-install_codex_hooks() {
-  local hook="${HIVE_BIN_DIR:+${HIVE_BIN_DIR}/hive-hook}" f="$HOME/.codex/hooks.json" want
+# Harness facts (executable, resume argv, prompt injection, hook file, event
+# names) live in one table shared with hive-member and hive-hook.
+[[ -f $SHARE/harness.sh ]] || die "harness table not found: $SHARE/harness.sh"
+. "$SHARE/harness.sh"
+harnesses=$(harness_list | paste -sd'|' -)
+require_harness() {
+  harness_fact "$1" exe >/dev/null 2>&1 || die "unknown harness: $1 (supported: $harnesses)"
+}
+
+# Every vendor reads hooks from a different file in a different schema, so the
+# serialization is an explicit per-vendor case; one generic JSON generator
+# across five schemas would be guesswork.
+install_hooks() {
+  local h="$1" hook cfg f v1 v2 v3 v4 v5 want
+  # cline registers hooks as executable files in ~/.cline/hooks, not a config
+  # file. No honest file to write here: say Room awareness is unavailable
+  # rather than writing a schema cline would ignore.
+  if [[ $h == cline ]]; then
+    echo "hive-launch: cline loads hooks as executable files in ~/.cline/hooks (no settings file); Room awareness unavailable for cline" >&2
+    return 0
+  fi
+  cfg=$(harness_fact "$h" hook_config || true)
+  [[ -n $cfg ]] || return 0
+  # Prefer the host-managed CLI directory so the file (and the harness's trust
+  # hash for it) stays stable across host updates; fall back to PATH.
+  hook="${HIVE_BIN_DIR:+${HIVE_BIN_DIR}/hive-hook}"
   [[ -n $hook && -x $hook ]] || hook=$(command -v hive-hook) || {
-    echo "hive-launch: hive-hook not found; Codex runs without Room awareness" >&2
+    echo "hive-launch: hive-hook not found; $h runs without Room awareness" >&2
     return 0
   }
-  want=$(jq -n --arg h "$hook" '
-    def on($e): [{hooks: [{type: "command", command: "\($h) codex \($e)"}]}];
-    {hooks: {
-      SessionStart: on("SessionStart"),
-      UserPromptSubmit: on("UserPromptSubmit"),
-      PostToolUse: [{matcher: "*", hooks: [{type: "command", command: "\($h) codex PostToolUse"}]}],
-      Stop: on("Stop"),
-      SessionEnd: on("SessionEnd")
-    }}')
-  mkdir -p "$HOME/.codex"
+  v1=$(harness_fact "$h" event:SessionStart)
+  v2=$(harness_fact "$h" event:UserPromptSubmit)
+  v3=$(harness_fact "$h" event:PostToolUse)
+  v4=$(harness_fact "$h" event:Stop)
+  v5=$(harness_fact "$h" event:SessionEnd)
+  f="$HOME/$cfg"
+  # Config keys use the vendor's event spelling; the command's event argument
+  # stays a Hive name because that is what hive-hook dispatches on.
+  case $h in
+    qwen) # qwen takes a matcher entry on every event, tool or not
+      want=$(jq -n --arg cmd "$hook $h" --arg v1 "$v1" --arg v2 "$v2" --arg v3 "$v3" --arg v4 "$v4" --arg v5 "$v5" '
+        def on($ev): [{matcher: "*", hooks: [{type: "command", command: "\($cmd) \($ev)"}]}];
+        {hooks: {($v1): on("SessionStart"), ($v2): on("UserPromptSubmit"), ($v3): on("PostToolUse"),
+                 ($v4): on("Stop"), ($v5): on("SessionEnd")}}')
+      ;;
+    codex | letta) # Claude-style: matcher only on the tool event
+      want=$(jq -n --arg cmd "$hook $h" --arg v1 "$v1" --arg v2 "$v2" --arg v3 "$v3" --arg v4 "$v4" --arg v5 "$v5" '
+        def on($ev): [{hooks: [{type: "command", command: "\($cmd) \($ev)"}]}];
+        {hooks: {($v1): on("SessionStart"), ($v2): on("UserPromptSubmit"),
+                 ($v3): [{matcher: "*", hooks: [{type: "command", command: "\($cmd) PostToolUse"}]}],
+                 ($v4): on("Stop"), ($v5): on("SessionEnd")}}')
+      ;;
+    cursor) # native .cursor/hooks.json takes flat entries, not Claude's nested shape
+      want=$(jq -n --arg cmd "$hook $h" --arg v1 "$v1" --arg v2 "$v2" --arg v3 "$v3" --arg v4 "$v4" --arg v5 "$v5" '
+        {version: 1,
+         hooks: {($v1): [{command: "\($cmd) SessionStart"}],
+                 ($v2): [{command: "\($cmd) UserPromptSubmit"}],
+                 ($v3): [{command: "\($cmd) PostToolUse", matcher: "*"}],
+                 ($v4): [{command: "\($cmd) Stop"}],
+                 ($v5): [{command: "\($cmd) SessionEnd"}]}}')
+      ;;
+    openhands) # snake_case keys at top level; entries carry no type field
+      want=$(jq -n --arg cmd "$hook $h" --arg v1 "$v1" --arg v2 "$v2" --arg v3 "$v3" --arg v4 "$v4" --arg v5 "$v5" '
+        def on($ev): [{matcher: "*", hooks: [{command: "\($cmd) \($ev)", timeout: 60}]}];
+        {($v1): on("SessionStart"), ($v2): on("UserPromptSubmit"), ($v3): on("PostToolUse"),
+         ($v4): on("Stop"), ($v5): on("SessionEnd")}')
+      ;;
+    *) return 0 ;;
+  esac
+  mkdir -p "$(dirname "$f")"
   [[ -f $f && $(cat "$f") == "$want" ]] || printf '%s\n' "$want" >"$f"
 }
 
@@ -45,21 +96,29 @@ install_codex_hooks() {
 if [[ ${1:-} == --run ]]; then
   shift
   harness="$1"; shift
+  require_harness "$harness"
   # Keep members on the host's current CLI after host updates, rather than
   # inheriting this session's pinned package path for its lifetime.
   if [[ -n ${HIVE_BIN_DIR:-} && -x $HIVE_BIN_DIR/hive && $(readlink -f "$HIVE_BIN_DIR") != $(dirname "$(readlink -f "$0")") ]]; then
     export PATH="$HIVE_BIN_DIR:$PATH"
   fi
+  install_hooks "$harness"
+  # Permission defaults that apply on every autonomous run; the harness table
+  # carries prompt injection, not these vendor launch flags.
+  args=()
   case $harness in
-    claude)
-      claude --permission-mode auto --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
-      ;;
-    codex)
-      install_codex_hooks
-      codex --approve-for-me --add-dir "$HIVE_ROOT" -c "developer_instructions=$(jq -Rs . <"$SHARE/member-instruction.md")" "$@" || true
-      ;;
-    *) die "unknown harness: $harness" ;;
+    claude) args=(--permission-mode auto) ;;
+    codex) args=(--approve-for-me --add-dir "$HIVE_ROOT") ;;
   esac
+  prompt=$(harness_fact "$harness" prompt)
+  case $prompt in
+    flag-append:* | flag-replace:*) args+=("${prompt#*:}" "$(cat "$SHARE/member-instruction.md")") ;;
+    config:*) args+=(-c "${prompt#config:}=$(jq -Rs . <"$SHARE/member-instruction.md")") ;;
+    hook) ;; # no CLI flag exists; the SessionStart hook supplies the instruction
+    *) die "harness $harness has no prompt injection method (prompt fact: '$prompt')" ;;
+  esac
+  exe=$(harness_fact "$harness" exe)
+  "$exe" "${args[@]}" "$@" || true
   echo
   echo "[$harness exited — shell kept open; HIVE_MEMBER=$HIVE_MEMBER]"
   exec bash -l
@@ -71,13 +130,14 @@ if [[ ${1:-} == --list ]]; then
   exit 0
 fi
 
-member="${1:-}"; [[ -n $member ]] || die "usage: hive-launch <member> [claude|codex] [dir] [-- args...]"
+member="${1:-}"; [[ -n $member ]] || die "usage: hive-launch <member> [$harnesses] [dir] [-- args...]"
 shift
 harness=claude
 dir="$HIVE_ROOT/projects"
 [[ $# -gt 0 && $1 != -- ]] && { harness="$1"; shift; }
 [[ $# -gt 0 && $1 != -- ]] && { dir="$1"; shift; }
 [[ ${1:-} == -- ]] && shift
+require_harness "$harness"
 [[ -d $dir ]] || die "no such directory: $dir"
 dir=$(readlink -f "$dir")
 
