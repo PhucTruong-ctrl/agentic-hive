@@ -4,13 +4,14 @@
 #   hive-launch <member> [claude|codex] [dir] [-- harness args...]
 #   hive-launch --list
 #
-# Members run as the `hive` Unix user. When invoked by another user (the
+# Members run as the `hive` account. When invoked by another user (the
 # Beekeeper), re-executes itself through sudo.
 set -euo pipefail
 
 HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
 HIVE_USER="${HIVE_USER:-hive}"
 SHARE="${HIVE_SHARE:-$(dirname "$(readlink -f "$0")")/../share/agentic-hive}"
+[[ -d $SHARE ]] || SHARE="$(dirname "$(readlink -f "$0")")/../share"
 
 die() { printf 'hive-launch: %s\n' "$*" >&2; exit 1; }
 
@@ -18,12 +19,12 @@ if [[ $(id -un) != "$HIVE_USER" ]]; then
   exec sudo -u "$HIVE_USER" -i -- hive-launch "$@"
 fi
 
-# Codex reads user-level hooks from ~/.codex/hooks.json. The command path is
-# the stable system profile path, so the file (and Codex's trust hash for it)
-# does not change across rebuilds.
+# Codex reads user-level hooks from ~/.codex/hooks.json. Prefer the host-managed
+# CLI directory so the file (and Codex's trust hash for it) stays stable across
+# host updates; fall back to whatever hive-hook is on PATH.
 install_codex_hooks() {
-  local hook=/run/current-system/sw/bin/hive-hook f="$HOME/.codex/hooks.json" want
-  [[ -x $hook ]] || hook=$(command -v hive-hook) || {
+  local hook="${HIVE_BIN_DIR:+${HIVE_BIN_DIR}/hive-hook}" f="$HOME/.codex/hooks.json" want
+  [[ -n $hook && -x $hook ]] || hook=$(command -v hive-hook) || {
     echo "hive-launch: hive-hook not found; Codex runs without Room awareness" >&2
     return 0
   }
@@ -44,10 +45,10 @@ install_codex_hooks() {
 if [[ ${1:-} == --run ]]; then
   shift
   harness="$1"; shift
-  # Keep members on the current installed CLI after host updates, rather than
-  # inheriting the launch wrapper's immutable package path for their lifetime.
-  if [[ -x /run/current-system/sw/bin/hive ]]; then
-    export PATH="$(printf '%s' "$PATH" | sed 's@/nix/store/[^:]*-agentic-hive-[^:]*/bin@/run/current-system/sw/bin@g')"
+  # Keep members on the host's current CLI after host updates, rather than
+  # inheriting this session's pinned package path for its lifetime.
+  if [[ -n ${HIVE_BIN_DIR:-} && -x $HIVE_BIN_DIR/hive && $(readlink -f "$HIVE_BIN_DIR") != $(dirname "$(readlink -f "$0")") ]]; then
+    export PATH="$HIVE_BIN_DIR:$PATH"
   fi
   case $harness in
     claude)

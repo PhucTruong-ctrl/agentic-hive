@@ -1,6 +1,6 @@
-# Agentic Hive 2.0 — v0.1 NixOS + Sandboxing Revised Specification
+# Agentic Hive 2.0 — v0.1 Revised Specification
 
-> **Implementation instruction:** Read this document before implementation. Preserve the deliberately minimal architecture. Hive is a persistent Unix habitat for capable general-purpose coding agents, not an AI office and not an orchestration framework. NixOS defines the reproducible host physics; `/srv/hive` remains the mutable habitat. Do not add supervisors, task routers, autonomous wake/delegation, vector memory, agent role systems, or workflow machinery unless the first live experiment produces concrete evidence that a missing primitive is necessary.
+> **Implementation instruction:** Read this document before implementation. Preserve the deliberately minimal architecture. Hive is a persistent Unix habitat for capable general-purpose coding agents, not an AI office and not an orchestration framework. The host's configuration system defines the reproducible host physics (the NixOS module or the portable installer); `/srv/hive` remains the mutable habitat. Do not add supervisors, task routers, autonomous wake/delegation, vector memory, agent role systems, or workflow machinery unless the first live experiment produces concrete evidence that a missing primitive is necessary.
 
 ## 1. Purpose
 
@@ -40,7 +40,7 @@ This should allow behavior that feels hive-like without pretending the agents ar
 
 Do not spend model cognition on bookkeeping that Unix or normal code can answer exactly.
 
-**NixOS / Hive Core should handle automatically:** process and filesystem reality, permissions, identity wiring, timestamps, Room atomicity, generation counters, member cursors, notification delivery, telemetry, claim storage, and basic state formatting.
+**Hive Core should handle automatically:** process and filesystem reality, permissions, identity wiring, timestamps, Room atomicity, generation counters, member cursors, notification delivery, telemetry, claim storage, and basic state formatting.
 
 **Members should reason about:** whether a peer message is relevant, whether a discovery changes the current plan, whether something should be announced, whether another member's room should be inspected, whether knowledge is durable enough to promote, whether a conflict needs collaboration, and whether Beekeeper intent/authority is required.
 
@@ -174,7 +174,7 @@ same Room and awareness history. Team labels group attention and project work,
 without adding channels, roles, hierarchy, task state, or filesystem access
 boundaries. Saved working folders apply on the next wake/restart.
 
-## 4. Host, NixOS, and Privilege Model
+## 4. Host and Privilege Model
 
 Target host:
 
@@ -182,7 +182,7 @@ Target host:
 Lenovo ThinkCentre-class host
 i5-8500
 20 GB RAM
-NixOS
+systemd Linux (Arch, Ubuntu, Mint, Fedora, Debian, or NixOS)
 KDE Plasma / Wayland
 XWayland available
 Xvfb available for isolated GUI tests
@@ -193,11 +193,11 @@ Actual running machine state remains authoritative when it differs from document
 
 ### 4.1 Tree versus habitat
 
-NixOS defines the **tree**: reproducible machine-level physics.
+The host configuration defines the **tree**: reproducible machine-level physics.
 
 Hive defines the **habitat**: intentionally mutable shared agent state.
 
-NixOS should own things such as:
+The tree should own things such as:
 
 - Unix users/groups;
 - SSH;
@@ -222,9 +222,9 @@ Hive should own things such as:
 - artifacts;
 - project-local mutable state.
 
-Do **not** put Room/member/claim state into declarative Nix configuration.
+Do **not** put Room/member/claim state into the host's declarative configuration.
 
-Nix defines the terrarium. It does not declaratively describe where every bee currently is.
+The host defines the terrarium. It does not declaratively describe where every bee currently is.
 
 ### 4.2 Unix identities
 
@@ -253,7 +253,7 @@ when risk justifies them. These represent isolation domains, not agent professio
 
 ### 4.3 Beekeeper owns the machine definition
 
-The Beekeeper owns and applies the NixOS host configuration.
+The Beekeeper owns and applies the host configuration.
 
 Normal members may inspect the machine definition when useful and may propose changes, but they must not independently redefine the host.
 
@@ -270,11 +270,11 @@ Beekeeper-level operations include:
 
 If a member reaches one of these boundaries, asking the Beekeeper is the correct behavior.
 
-### 4.4 Nix store as capability substrate
+### 4.4 Reproducible capability substrate
 
 Members may consume declared packages and build environments, but should not own host configuration.
 
-The Nix store provides an effectively immutable software substrate from the member's perspective.
+The host's package manager and a root-owned install prefix provide an effectively immutable software substrate from the member's perspective.
 
 This is desirable:
 
@@ -284,9 +284,9 @@ bee cannot silently redefine the tree
 ```
 
 Autonomy means freedom inside the allowed habitat, not unrestricted machine ownership.
-## 5. Unix and Nix Tooling
+## 5. Unix Tooling
 
-Prefer normal Unix/NixOS capabilities before custom infrastructure.
+Prefer normal Unix and host capabilities before custom infrastructure.
 
 Recommended host baseline:
 
@@ -320,9 +320,9 @@ nix-direnv
 
 Godot and project-specific dependencies may be host-wide or project-local depending on whether reproducibility and version pinning matter.
 
-### 5.1 Agent-facing Nix surface
+### 5.1 Agent-facing environment surface
 
-Keep the normal member-facing Nix vocabulary small.
+Keep the normal member-facing environment vocabulary small.
 
 Expected project-level commands:
 
@@ -345,7 +345,7 @@ nix develop
 
 or an automatically activated `direnv` / `nix-direnv` environment and then work as normal developers.
 
-Nix expertise should not become mandatory cognitive overhead for unrelated tasks.
+Nix or packaging expertise should not become mandatory cognitive overhead for unrelated tasks.
 
 ### 5.2 What members may define
 
@@ -1297,4 +1297,4 @@ Everything else is implementation detail.
 
 ## 25. One-Sentence Definition
 
-**Agentic Hive is a persistent NixOS/Unix habitat where capable general-purpose agents share reality and awareness, use reproducible capabilities and risk-appropriate sandboxes without orchestration overhead, coordinate locally, and escalate only genuine intent or authority decisions to the Beekeeper.**
+**Agentic Hive is a persistent Unix habitat where capable general-purpose agents share reality and awareness, use reproducible capabilities and risk-appropriate sandboxes without orchestration overhead, coordinate locally, and escalate only genuine intent or authority decisions to the Beekeeper.**

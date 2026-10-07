@@ -164,7 +164,7 @@ profile_hint() {
   team=$(jq -r '.team // empty' <<<"$value")
   printf 'HIVE member name: %s (session identity %s)' "$name" "$m"
   [[ -z $team ]] || printf '; team: @%s' "$team"
-  printf '. One shared Room; @team tags prompt that team, @all prompts other members. Use /run/current-system/sw/bin/hive on NixOS for current name/team routing. Use your current project/worktree; a saved working folder takes effect on wake/restart.\n'
+  printf '. One shared Room; @team tags prompt that team, @all prompts other members. Use hive for current name/team routing. Use your current project/worktree; a saved working folder takes effect on wake/restart.\n'
   printf '%s\n' "$value" >"$marker" 2>/dev/null || true
 }
 
@@ -223,12 +223,14 @@ quiet_nudge() {
 }
 
 core_hint() {
-  local current marker="$nest/state/last-core-path-hint"
-  [[ -x /run/current-system/sw/bin/hive ]] || return 0
-  [[ $(dirname "$(readlink -f "$0")") == $(dirname "$(readlink -f /run/current-system/sw/bin/hive-hook)") ]] || return 0
-  current=$(readlink -f /run/current-system/sw/bin/hive)
+  local current marker="$nest/state/last-core-path-hint" bindir="${HIVE_BIN_DIR:-}"
+  # Only meaningful when the host defines the always-current CLI directory and
+  # this session's own hive lives somewhere else (e.g. a pinned package path).
+  [[ -n $bindir && -x $bindir/hive ]] || return 0
+  [[ $(dirname "$(readlink -f "$(dirname "$(readlink -f "$0")")/hive")") != $(dirname "$(readlink -f "$bindir/hive")") ]] || return 0
+  current=$(readlink -f "$bindir/hive")
   [[ $(cat "$marker" 2>/dev/null) != "$current" ]] || return 0
-  printf 'HIVE CLI: /run/current-system/sw/bin/hive tracks host updates; older running sessions may retain a pinned PATH. Its Room @member/@all mentions prompt peers. Ask human intent/taste questions with hive say "@beekeeper <question?>"; the WebUI highlights them and replies prompt your session. Preserve unresolved choices; continue only independent work while awaiting an answer.\n'
+  printf 'HIVE CLI: %s/hive tracks host updates; older running sessions may retain a pinned PATH. Its Room @member/@all mentions prompt peers. Ask human intent/taste questions with hive say "@beekeeper <question?>"; the WebUI highlights them and replies prompt your session. Preserve unresolved choices; continue only independent work while awaiting an answer.\n' "$bindir"
   printf '%s\n' "$current" >"$marker" 2>/dev/null || true
 }
 

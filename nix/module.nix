@@ -216,7 +216,13 @@ in
       };
     };
 
-    environment.variables.HIVE_ROOT = cfg.root;
+    environment.variables = {
+      HIVE_ROOT = cfg.root;
+      # Member sessions pin a package path for their whole lifetime; the system
+      # profile tracks rebuilds, so hive-hook/hive-launch use it to spot a moved
+      # CLI and keep Codex's hook path stable.
+      HIVE_BIN_DIR = "/run/current-system/sw/bin";
+    };
 
     # Member sessions are tmux; make attaching and copying painless:
     # mouse selection, OSC 52 clipboard (works over SSH), big scrollback.

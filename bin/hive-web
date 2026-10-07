@@ -38,7 +38,9 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 HIVE_ROOT = Path(os.environ.get("HIVE_ROOT", "/srv/hive"))
-SHARE = Path(os.environ.get("HIVE_SHARE", Path(__file__).resolve().parent.parent / "share/agentic-hive"))
+SHARE = Path(os.environ.get("HIVE_SHARE") or Path(__file__).resolve().parent.parent / "share/agentic-hive")
+if not (SHARE / "dashboard.html").is_file():  # plain git checkout ships share/ directly
+    SHARE = Path(__file__).resolve().parent.parent / "share"
 WORKING_WINDOW = 120  # seconds of inactivity before "working" becomes "idle"
 ROOM_TAIL_BYTES = 512 * 1024
 ROOM_ENTRIES = 40
@@ -394,7 +396,7 @@ def member_panes():
 
 
 def pane_harness_pid(pane_pid, harness):
-    """Find the agent underneath its tmux pane, including wrapped Nix binaries."""
+    """Find the agent underneath its tmux pane, including wrapped launchers."""
     pending = [pane_pid] if pane_pid else []
     seen = set()
     while pending and len(seen) < 256:
@@ -888,7 +890,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 12000:
                     raise ValueError("prompt must be 1–12000 characters")
 
-                named_prompt = f'Message from Beekeeper {actor_member} via dashboard (reply @{actor_member}; use /run/current-system/sw/bin/hive on NixOS for current Room routing): {prompt}' if viewer["named"] else prompt
+                named_prompt = f'Message from Beekeeper {actor_member} via dashboard (reply @{actor_member}; use hive for current Room routing): {prompt}' if viewer["named"] else prompt
                 run_hive("hive-member", "send", member, named_prompt)
 
                 self._send(200, json.dumps({"ok": True}), "application/json")
