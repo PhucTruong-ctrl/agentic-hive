@@ -55,6 +55,21 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(remaining["hooks"], {"SessionStart": [{"hooks": [{"command": "company-hook"}]}]})
         self.assertNotIn("statusLine", remaining)
 
+    def test_symlinked_settings_target_is_restored(self):
+        target = self.root / "company/settings.json"
+        target.parent.mkdir()
+        original = '{"permissions":{"deny":["Bash(*)"]}}'
+        target.write_text(original)
+        config = self.root / "etc/claude-code/managed-settings.json"
+        config.parent.mkdir(parents=True)
+        config.symlink_to(target)
+        self.install()
+        self.assertTrue(config.is_symlink())
+        self.assertIn("hooks", json.loads(target.read_text()))
+        self.install("--uninstall")
+        self.assertTrue(config.is_symlink())
+        self.assertEqual(target.read_text(), original)
+
     def test_no_hooks_does_not_claim_existing_policy(self):
         config = self.root / "etc/claude-code/managed-settings.json"
         config.parent.mkdir(parents=True)

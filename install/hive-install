@@ -76,6 +76,7 @@ done
 
 DESTDIR=${DESTDIR:-}
 DESTDIR=${DESTDIR%/}
+[[ -z $DESTDIR ]] || DESTDIR=$(readlink -m -- "$DESTDIR")
 STAGE=
 [[ -n $DESTDIR ]] && STAGE=1
 
@@ -392,7 +393,7 @@ install_hooks() {
     note "skipping Claude Code hooks (--no-hooks)"
     return 0
   fi
-  local desired existed=0
+  local desired hook_path existed=0
   desired=$(cat <<EOF
 {
   "statusLine": {
@@ -422,11 +423,17 @@ EOF
 )
   if (( DRY_RUN )); then note "would merge Hive hooks into $HOOKS"; return 0; fi
   [[ ! -e $(dest "$HOOKS") ]] || existed=1
-  remember_file "$(dest "$HOOKS")"
-  state set managed_hooks "$(jq -n --arg path "$(dest "$HOOKS")" --argjson desired "$desired" '{path:$path,desired:$desired}')"
-  python3 "$SRC/share/hive_config.py" merge "$(dest "$HOOKS")" <<<"$desired"
+  # The config merger preserves symlinks by updating their target. Journal
+  # that target, rather than the unchanged symlink, so uninstall restores it.
+  hook_path=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$(dest "$HOOKS")")
+  if [[ -n $STAGE && $hook_path != "$DESTDIR/"* ]]; then
+    die "staged hook settings resolve outside DESTDIR: $hook_path"
+  fi
+  remember_file "$hook_path"
+  state set managed_hooks "$(jq -n --arg path "$hook_path" --argjson desired "$desired" '{path:$path,desired:$desired}')"
+  python3 "$SRC/share/hive_config.py" merge "$hook_path" <<<"$desired"
   (( existed )) || chmod 0644 "$(dest "$HOOKS")"
-  record_file "$(dest "$HOOKS")"
+  record_file "$hook_path"
 }
 
 # --- tmux -------------------------------------------------------------------
