@@ -109,10 +109,22 @@ HOOKS=/etc/claude-code/managed-settings.json
 
 BIN_FILES=(hive hive-hook hive-launch hive-dash hive-web hive-attach hive-statusline hive-member hive-session)
 BRIDGE_FILES=(hive-bridge/pi-on.js hive-bridge/opencode.js)
-SHARE_FILES=(member-instruction.md dashboard.html xterm.js xterm.css hive_members.py harness.sh)
+SHARE_FILES=(member-instruction.md dashboard.html xterm.js xterm.css hive_members.py harness.sh hive_config.py)
+
 # Assets ship next to this script in the repo (install/ sits beside bin/ and share/).
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SRC=$(dirname -- "$HERE")
+STATE_DIR="$DESTDIR/var/lib/agentic-hive-install"
+STATE_HELPER="$HERE/hive-state.py"
+state() { python3 "$STATE_HELPER" "$STATE_DIR" "$@"; }
+state_set() { (( DRY_RUN )) || state set "$@"; }
+remember_file() { (( DRY_RUN )) || state remember "$1"; }
+record_file() { (( DRY_RUN )) || state record "$1"; }
+state_options() {
+  jq -n --arg user "$HIVE_USER" --arg group "$HIVE_GROUP" --arg root "$HIVE_ROOT" \
+    --arg prefix "$PREFIX" --arg beekeeper "$BEEKEEPER" \
+    '{user:$user, group:$group, root:$root, prefix:$prefix, beekeeper:$beekeeper}'
+}
 
 dest() { printf '%s%s' "$DESTDIR" "$1"; }
 
@@ -133,6 +145,7 @@ act_ok() { # act_ok <description> <command...>  — tolerate failure (cleanup)
 put_file() { # put_file <mode> <path>  — stdin becomes the file, replacing it
   local mode=$1 path=$2 tmp
   if (( DRY_RUN )); then printf 'would write %s\n' "$path"; cat >/dev/null; return 0; fi
+  remember_file "$path"
   mkdir -p -- "$(dirname -- "$path")"
   # Write-then-rename: a read-only 0440 sudoers file must still be replaceable
   # on re-install, and appending would duplicate the rule on every run.
@@ -140,6 +153,7 @@ put_file() { # put_file <mode> <path>  — stdin becomes the file, replacing it
   cat >"$tmp"
   chmod "$mode" "$tmp"
   mv -f -- "$tmp" "$path"
+  record_file "$path"
   printf 'wrote %s\n' "$path"
 }
 
@@ -157,10 +171,10 @@ pkg_family() {
 # family_row <family> -> "<install command>|<packages>"
 family_row() {
   case $1 in
-    pacman)  printf '%s' 'pacman -S --needed --noconfirm|bash python jq gawk util-linux coreutils git tmux ripgrep acl grep sed find sudo ncurses' ;;
-    apt-get) printf '%s' 'apt-get install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed find sudo ncurses-bin' ;;
-    dnf)     printf '%s' 'dnf install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed find sudo ncurses' ;;
-    zypper)  printf '%s' 'zypper --non-interactive install|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed find sudo ncurses' ;;
+    pacman)  printf '%s' 'pacman -S --needed --noconfirm|bash python jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
+    apt-get) printf '%s' 'apt-get install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses-bin' ;;
+    dnf)     printf '%s' 'dnf install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
+    zypper)  printf '%s' 'zypper --non-interactive install|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
     *) return 1 ;;
   esac
 }
@@ -202,15 +216,24 @@ create_account() {
     note "skipping account setup (DESTDIR)"
     return 0
   fi
-  getent group "$HIVE_GROUP" >/dev/null 2>&1 ||
+  if ! getent group "$HIVE_GROUP" >/dev/null 2>&1; then
     act "created group $HIVE_GROUP" groupadd "$HIVE_GROUP"
-  id -u "$HIVE_USER" >/dev/null 2>&1 ||
+    state_set created_group true
+  fi
+  if ! id -u "$HIVE_USER" >/dev/null 2>&1; then
     act "created user $HIVE_USER" useradd --create-home --home-dir "$HIVE_HOME" \
       --shell /bin/bash --comment "Agentic Hive members" --gid "$HIVE_GROUP" "$HIVE_USER"
-  # Beekeeper may inspect the home directory; agent credentials keep their own modes.
-  act "set $HIVE_HOME mode 0750" chmod 0750 "$HIVE_HOME"
-  # NOPASSWD sudo to the hive user lets the Beekeeper launch/attach sessions without a root shell.
-  act "added $BEEKEEPER to group $HIVE_GROUP" usermod -aG "$HIVE_GROUP" "$BEEKEEPER"
+    state_set created_user true
+    act "set $HIVE_HOME mode 0750" chmod 0750 "$HIVE_HOME"
+  else
+    # Reusing an account must not change its home or permissions.
+    HIVE_HOME=$(getent passwd "$HIVE_USER" | cut -d: -f6)
+    [[ -d $HIVE_HOME ]] || die "existing account has no home directory: $HIVE_HOME"
+  fi
+  if ! id -nG "$BEEKEEPER" | tr ' ' '\n' | grep -qxF "$HIVE_GROUP"; then
+    act "added $BEEKEEPER to group $HIVE_GROUP" usermod -aG "$HIVE_GROUP" "$BEEKEEPER"
+    state_set added_membership true
+  fi
 }
 
 # --- shared assets ----------------------------------------------------------
@@ -218,13 +241,17 @@ create_account() {
 install_files() {
   local f
   for f in "${BIN_FILES[@]}"; do
+    remember_file "$(dest "$BIN_DIR/$f")"
     act "installed $BIN_DIR/$f" install -D -m 0755 "$SRC/bin/$f" "$(dest "$BIN_DIR/$f")"
+    record_file "$(dest "$BIN_DIR/$f")"
   done
   for f in "${BRIDGE_FILES[@]}"; do
     act "installed $SHARE_DIR/$f" install -D -m 0644 "$SRC/share/$f" "$(dest "$SHARE_DIR/$f")"
   done
   for f in "${SHARE_FILES[@]}"; do
+    remember_file "$(dest "$SHARE_DIR/$f")"
     act "installed $SHARE_DIR/$f" install -D -m 0644 "$SRC/share/$f" "$(dest "$SHARE_DIR/$f")"
+    record_file "$(dest "$SHARE_DIR/$f")"
   done
 }
 # --- habitat ----------------------------------------------------------------
@@ -262,6 +289,9 @@ install_profile() {
   put_file 0644 "$(dest "$PROFILE")" <<EOF
 # Hive commands and shared assets for login shells.
 export HIVE_SHARE=$SHARE_DIR
+export HIVE_USER=$HIVE_USER
+export HIVE_ROOT=$HIVE_ROOT
+export HIVE_BIN_DIR=$BIN_DIR
 case ":\$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) export PATH="$BIN_DIR:\$PATH" ;;
@@ -289,6 +319,9 @@ User=$HIVE_USER
 Group=$HIVE_GROUP
 UMask=0002
 Environment=HIVE_ROOT=$HIVE_ROOT
+Environment=HIVE_USER=$HIVE_USER
+Environment=HIVE_SHARE=$SHARE_DIR
+Environment=HIVE_BIN_DIR=$BIN_DIR
 ExecStart=$BIN_DIR/hive init
 
 [Install]
@@ -305,6 +338,9 @@ After=network.target agentic-hive-init.service
 User=$HIVE_USER
 Group=$HIVE_GROUP
 Environment=HIVE_ROOT=$HIVE_ROOT
+Environment=HIVE_USER=$HIVE_USER
+Environment=HIVE_SHARE=$SHARE_DIR
+Environment=HIVE_BIN_DIR=$BIN_DIR
 # git refuses repos owned by another user unless marked safe.
 Environment=GIT_CONFIG_COUNT=1
 Environment=GIT_CONFIG_KEY_0=safe.directory
@@ -358,7 +394,8 @@ install_hooks() {
     note "skipping Claude Code hooks (--no-hooks)"
     return 0
   fi
-  put_file 0644 "$(dest "$HOOKS")" <<EOF
+  local desired existed=0
+  desired=$(cat <<EOF
 {
   "statusLine": {
     "type": "command",
@@ -384,6 +421,14 @@ install_hooks() {
   }
 }
 EOF
+)
+  if (( DRY_RUN )); then note "would merge Hive hooks into $HOOKS"; return 0; fi
+  [[ ! -e $(dest "$HOOKS") ]] || existed=1
+  remember_file "$(dest "$HOOKS")"
+  state set managed_hooks "$(jq -n --arg path "$(dest "$HOOKS")" --argjson desired "$desired" '{path:$path,desired:$desired}')"
+  python3 "$SRC/share/hive_config.py" merge "$(dest "$HOOKS")" <<<"$desired"
+  (( existed )) || chmod 0644 "$(dest "$HOOKS")"
+  record_file "$(dest "$HOOKS")"
 }
 
 # --- tmux -------------------------------------------------------------------
@@ -421,11 +466,11 @@ uninstall() {
     act_ok "disabled hive-web.service" systemctl disable --now hive-web.service
     act_ok "disabled agentic-hive-init.service" systemctl disable --now agentic-hive-init.service
   fi
-  for f in "${BIN_FILES[@]}"; do act_ok "removed $BIN_DIR/$f" rm -f "$(dest "$BIN_DIR/$f")"; done
-  act_ok "removed $SHARE_DIR" rm -rf "$(dest "$SHARE_DIR")"
-  for f in "$TMPFILES" "$SUDOERS" "$PROFILE" "$TMUX_CONF" "$HOOKS" "$INIT_UNIT" "$WEB_UNIT"; do
-    act_ok "removed $f" rm -f "$(dest "$f")"
-  done
+  if (( DRY_RUN )); then
+    note "would restore installer-owned files using $STATE_DIR/state.json"
+  else
+    state restore
+  fi
   # The habitat is mutable shared state (SPEC 4.1), not installer-owned tree, so
   # it survives uninstall like it does on the NixOS backend. Say so plainly.
   note ""
@@ -433,14 +478,23 @@ uninstall() {
   note "  it holds the Beekeeper's work: projects/, member nests, claims,"
   note "  Room history and the Knowledge Vault"
   note "  uninstall never removes habitat state — delete $HIVE_ROOT yourself if you mean to"
-  if [[ -n $STAGE ]]; then
-    note "skipping systemctl (DESTDIR)"
-    return 0
+  if [[ -z $STAGE ]]; then
+    act_ok "reloaded systemd" systemctl daemon-reload
+    if [[ $(state get added_membership) == true ]]; then
+      act "removed $BEEKEEPER from group $HIVE_GROUP" gpasswd -d "$BEEKEEPER" "$HIVE_GROUP"
+      state_set added_membership false
+    fi
+    if [[ $(state get created_user) == true ]]; then
+      # Credentials and conversation files are mutable data, even for an account we created.
+      act "removed installer-created user $HIVE_USER (home retained)" userdel "$HIVE_USER"
+      state_set created_user false
+    fi
+    if [[ $(state get created_group) == true ]]; then
+      act "removed installer-created group $HIVE_GROUP" groupdel "$HIVE_GROUP"
+      state_set created_group false
+    fi
   fi
-  act_ok "reloaded systemd" systemctl daemon-reload
-  act_ok "removed $BEEKEEPER from group $HIVE_GROUP" gpasswd -d "$BEEKEEPER" "$HIVE_GROUP"
-  act_ok "removed user $HIVE_USER" userdel --remove "$HIVE_USER"
-  act_ok "removed group $HIVE_GROUP" groupdel "$HIVE_GROUP"
+  act "removed installation journal" rm -rf -- "$STATE_DIR"
 }
 
 # --- summary ----------------------------------------------------------------
@@ -478,6 +532,8 @@ summary() {
 
 # --- main -------------------------------------------------------------------
 if (( UNINSTALL )); then
+  [[ -f $STATE_DIR/state.json ]] || die "no installation ownership journal; refusing to remove untracked files or accounts"
+  if (( ! DRY_RUN )); then state init "$(state_options)"; fi
   uninstall
   note "Hive uninstalled."
   exit 0
@@ -488,6 +544,7 @@ if [[ ! -d $SRC/bin || ! -d $SRC/share ]]; then
 fi
 
 install_packages
+if (( ! DRY_RUN )); then state init "$(state_options)"; fi
 create_account
 install_files
 install_tmpfiles

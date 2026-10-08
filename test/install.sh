@@ -113,4 +113,6 @@ check "uninstall exits 0" uninstall_from "$root2"
 check "uninstall drops systemd units" bash -c '! ls "$1"/etc/systemd/system/*.service >/dev/null 2>&1' _ "$root2"
 check "uninstall drops sudoers rule" test ! -e "$root2/etc/sudoers.d/agentic-hive"
 
+python3 "$repo/test/installer.py"
+python3 "$repo/test/config.py"
 echo "all $pass checks passed"
