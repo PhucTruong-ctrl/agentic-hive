@@ -199,29 +199,7 @@ BRIDGE="$REPO_ROOT/share/hive-bridge/pi-on.js"
 check "pi-on is ESM (no require)" bash -c '! grep -q "require(" "$1"' _ "$BRIDGE"
 check "pi-on reads the harness name" grep -q 'HIVE_HARNESS' "$BRIDGE"
 if command -v node >/dev/null 2>&1; then
-  btmp="$HIVE_ROOT/bridge-tmp"
-  mkdir -p "$btmp"
-  cat >"$btmp/hive-hook" <<'EOF'
-#!/usr/bin/env bash
-cat >/dev/null 2>&1 || true
-printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"HIVE-CONTEXT-MARKER"}}\n' "$2"
-EOF
-  chmod +x "$btmp/hive-hook"
-  cat >"$btmp/check.mjs" <<'EOF'
-const bridge = (await import(process.env.BRIDGE)).default;
-const sent = [];
-const handlers = {};
-bridge({ on: (e, h) => { handlers[e] = h; }, sendMessage: (m) => sent.push(m) });
-const r = await handlers.tool_result({ toolName: "Bash" }, {});
-console.log("RESULT=" + JSON.stringify(r));
-console.log("SENT=" + JSON.stringify(sent));
-EOF
-  bridge_run() { BRIDGE="$BRIDGE" HIVE_BIN_DIR="$btmp" HIVE_HARNESS="$1" HIVE_MEMBER="$2" \
-    node --no-warnings "$btmp/check.mjs" 2>/dev/null; }
-  check "bridge delivers to omp via its return value" grep -q 'HIVE-CONTEXT-MARKER' <<<"$(bridge_run omp alice)"
-  check "bridge delivers to pi via sendMessage" grep -q 'SENT=\["HIVE-CONTEXT-MARKER"\]' <<<"$(bridge_run pi alice)"
-  check "bridge stays silent without HIVE_MEMBER" bash -c '! grep -q HIVE-CONTEXT-MARKER <<<"$1"' _ "$(bridge_run omp '')"
-  rm -rf "$btmp"
+  check "bridge API contracts and delivery acknowledgements" node --no-warnings "$REPO_ROOT/test/bridge.mjs"
 else
   printf 'skip bridge behaviour checks (node absent)\n'
 fi

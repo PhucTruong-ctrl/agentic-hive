@@ -7,6 +7,8 @@ trap 'rm -rf "$tmp"' EXIT
 export HIVE_ROOT="$tmp/hive" HIVE_USER="$(id -un)" HIVE_TEST_LOG="$tmp/log"
 export HIVE_TEST_AGENT_PID=$$
 export HIVE_MEMBER=bob
+export HOME="$tmp/home with 'quote'"
+mkdir -p "$HOME"
 export HIVE_TEST_HOOK="$repo/bin/hive-hook"
 mkdir -p "$HIVE_ROOT/members/bob/state" "$HIVE_ROOT/telemetry/members" "$HIVE_ROOT/projects" "$tmp/bin" "$tmp/share"
 printf '%s\n' '{"harness":"codex","dir":"'"$HIVE_ROOT/projects"'"}' >"$HIVE_ROOT/members/bob/state/launch.json"
@@ -177,13 +179,18 @@ EOF
 chmod +x "$tmp/bin/claude" "$tmp/bin/codex"
 printf 'member instruction\n' >"$tmp/share/member-instruction.md"
 cp "$repo/share/harness.sh" "$tmp/share/harness.sh"
+cp "$repo/share/hive_config.py" "$tmp/share/hive_config.py"
+mkdir -p "$tmp/share/hive-bridge"
+cp "$repo/share/hive-bridge/"*.js "$tmp/share/hive-bridge/"
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run claude 'first task' </dev/null >/dev/null
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run codex 'first task' </dev/null >/dev/null
 rg -q '^claude --permission-mode auto .*first task$' "$HIVE_TEST_LOG"
 rg -q '^codex --approve-for-me --add-dir '"$HIVE_ROOT"' .*first task$' "$HIVE_TEST_LOG"
 printf 'autonomous launch flags applied\n'
 
-for b in qwen letta agent openhands cline; do
+mkdir -p "$HOME/.qwen"
+printf '%s\n' '{"model":{"name":"existing-model"},"mcpServers":{"existing":{}},"hooks":{"SessionStart":[{"hooks":[{"command":"existing-hook"}]}]}}' >"$HOME/.qwen/settings.json"
+for b in qwen letta agent openhands cline omp pi opencode; do
   cat >"$tmp/bin/$b" <<EOF
 #!/usr/bin/env bash
 printf '$b %s\n' "\$*" >>"\$HIVE_TEST_LOG"
@@ -191,7 +198,7 @@ EOF
   chmod +x "$tmp/bin/$b"
 done
 : >"$HIVE_TEST_LOG"
-for h in qwen letta cursor openhands cline; do
+for h in qwen letta cursor openhands cline omp pi opencode; do
   HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run "$h" 'first task' </dev/null >/dev/null
 done
 rg -q '^qwen --append-system-prompt .*first task$' "$HIVE_TEST_LOG"
@@ -200,12 +207,26 @@ rg -q '^agent first task$' "$HIVE_TEST_LOG"
 rg -q '^openhands first task$' "$HIVE_TEST_LOG"
 rg -q '^cline --system .*first task$' "$HIVE_TEST_LOG"
 printf 'new harness launch flags applied\n'
+HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run qwen </dev/null >/dev/null
+jq -e '.model.name == "existing-model" and .mcpServers.existing != null and (.hooks.SessionStart | length) == 2' "$HOME/.qwen/settings.json" >/dev/null
+rg -q existing-hook "$HOME/.qwen/settings.json"
+printf 'harness launch preserves settings and existing hooks across reinstalls\n'
+if command -v node >/dev/null 2>&1; then
+  node --no-warnings --input-type=module - "$HOME/.pi/agent/extensions/hive.js" "$HOME/.config/opencode/plugins/hive.js" <<'EOF'
+import { pathToFileURL } from 'node:url';
+const pi = await import(pathToFileURL(process.argv[2]).href);
+const opencode = await import(pathToFileURL(process.argv[3]).href);
+if (typeof pi.default !== 'function' || typeof opencode.Plugin !== 'function') throw new Error('broken installed module');
+EOF
+  printf 'installed bridge imports resolve with spaces and quotes in HOME\n'
+fi
 
-for h in claude codex qwen letta cursor openhands cline; do
+for h in claude codex qwen letta cursor openhands cline omp pi opencode; do
   case $h in
     codex) flag=resume ;;
     letta) flag=--conversation ;;
     cline) flag=--id ;;
+    pi|opencode) flag=--session ;;
     *) flag=--resume ;;
   esac
   printf '%s\n' '{"harness":"'"$h"'","dir":"'"$HIVE_ROOT"'/projects"}' >"$HIVE_ROOT/members/bob/state/launch.json"

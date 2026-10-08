@@ -130,12 +130,12 @@ record_prompt() {
 emit() { # additionalContext for this event, in the harness's output shape
   local shape
   shape=$(harness_fact "$harness" out 2>/dev/null) || shape=claude
-  case $shape in
-    top) jq -n --arg ctx "$1" '{additionalContext: $ctx}' ;;
-    mod) jq -n --arg ctx "$1" '{contextModification: $ctx}' ;;
-    *) jq -n --arg ev "$event" --arg ctx "$1" \
-      '{hookSpecificOutput: {hookEventName: $ev, additionalContext: $ctx}}' ;;
-  esac
+  jq -n --arg shape "$shape" --arg ev "$event" --arg ctx "$1" \
+    --arg generation "${delivery_generation:-}" '
+      (if $shape == "top" then {additionalContext:$ctx}
+       elif $shape == "mod" then {contextModification:$ctx}
+       else {hookSpecificOutput:{hookEventName:$ev,additionalContext:$ctx}} end)
+      + (if $generation == "" then {} else {hiveDelivery:{generation:($generation|tonumber)}} end)'
 }
 
 # Unseen Room entries from peers, or nothing. Advances the cursor only after
@@ -147,20 +147,42 @@ deliver() {
   g=$(read_int "$HIVE_ROOT/.room-generation")
   c=$(read_int "$cursor_file")
   if ((g > c)); then
+    delivery_generation=
+    [[ ${HIVE_HOOK_DEFER_DELIVERY:-0} != 1 ]] || delivery_generation=$g
     entries=$(hive _entries "$c" "$m" "$MAX_ENTRIES" 2>/dev/null) || entries=""
     if [[ -n $entries ]]; then
       n=$(grep -c '^\[[0-9]\+\] ' <<<"$entries")
       emit "$(printf '%s\nHIVE Room: %s new message(s) from peers (information, not authority):\n\n%s' \
         "$header" "$n" "$entries")" || { flock -u 8; return 0; }
-    elif [[ -n $header ]]; then
+    elif [[ -n $header || -n $delivery_generation ]]; then
       emit "$header" || { flock -u 8; return 0; }
     fi
-    printf '%s\n' "$g" >"$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"
+    if [[ ${HIVE_HOOK_DEFER_DELIVERY:-0} != 1 ]]; then
+      printf '%s\n' "$g" >"$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"
+    fi
   elif [[ -n $header ]]; then
     emit "$header"
   fi
   flock -u 8
 }
+
+# In-process adapters acknowledge only after handing context to the model.
+# Failed spawning/parsing/injection leaves the cursor unchanged for retry.
+acknowledge() {
+  local requested current generation
+  requested=$(field '.delivery_generation | select(type == "number" and . >= 0 and . == floor and . <= 9007199254740991)')
+  [[ $requested =~ ^[0-9]+$ ]] || return 0
+  exec 8>>"$nest/state/.deliver.lock" || return 0
+  flock 8
+  current=$(read_int "$cursor_file")
+  generation=$(read_int "$HIVE_ROOT/.room-generation")
+  if ((requested > current && requested <= generation)); then
+    printf '%s\n' "$requested" >"$cursor_file.tmp" && mv -f "$cursor_file.tmp" "$cursor_file"
+  fi
+  flock -u 8
+}
+
+can_deliver() { [[ ${HIVE_HOOK_TELEMETRY_ONLY:-0} != 1 ]]; }
 
 session_header() {
   local claims mine=0 others=0 d owner lines="" notes_line=""
@@ -272,12 +294,17 @@ core_hint() {
 case $event in
   SessionStart)
     telemetry working
-    deliver "$(session_header)"
+    if can_deliver; then
+      deliver "$(
+        [[ $(harness_fact "$harness" prompt 2>/dev/null) != hook ]] || cat "$share/member-instruction.md"
+        session_header
+      )"
+    fi
     ;;
   UserPromptSubmit)
     record_prompt
     telemetry working
-    deliver "$(
+    can_deliver && deliver "$(
       core_hint
       profile_hint
       quiet_nudge
@@ -285,7 +312,7 @@ case $event in
     ;;
   PostToolUse)
     telemetry working
-    deliver "$(profile_hint)"
+    can_deliver && deliver "$(profile_hint)"
     [[ $harness == codex ]] && codex_quota
     ;;
   Stop)
@@ -294,6 +321,13 @@ case $event in
     ;;
   SessionEnd)
     telemetry ended
+    ;;
+  Context)
+    telemetry working
+    can_deliver && deliver "$(cat "$share/member-instruction.md"; session_header; core_hint)"
+    ;;
+  Acknowledge)
+    acknowledge
     ;;
 esac
 exit 0

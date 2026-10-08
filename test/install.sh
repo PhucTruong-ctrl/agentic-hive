@@ -48,7 +48,7 @@ asset_ok() { [[ -f $SHARE/$1 ]] && [[ $(stat -c '%a' "$SHARE/$1") == 644 ]]; }
 for a in member-instruction.md dashboard.html xterm.js xterm.css hive_members.py harness.sh; do
   check "share/agentic-hive/$a 0644" asset_ok "$a"
 done
-for b in hive-bridge/pi-on.js hive-bridge/opencode.js; do
+for b in hive-bridge/pi-on.js hive-bridge/opencode.js hive-bridge/hive-runner.js; do
   check "share/agentic-hive/$b 0644" asset_ok "$b"
 done
 # --- 5. tmpfiles -----------------------------------------------------------------

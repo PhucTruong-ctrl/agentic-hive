@@ -885,7 +885,12 @@ Adapters are table-driven, not separate implementations: `harness_fact
 harness's executable, prompt flag, resume form, hook config, and event names,
 and `harness_list` enumerates the supported set — Claude Code, Codex, Qwen
 Code, Letta Code, Cursor CLI, OpenHands, Cline, Oh My Pi, pi, and opencode.
-Harnesses whose hooks are in-process plugins (Oh My Pi, pi, opencode) receive a shipped bridge module installed into their plugin directory; config-file harnesses receive a generated settings file.
+Harnesses whose hooks are in-process plugins (Oh My Pi, pi, OpenCode V1)
+receive a shipped bridge module installed into their plugin directory, with
+dependencies outside auto-discovery directories. Config-file harnesses merge
+Hive's commands into existing settings without replacing unrelated settings
+or hooks. Plugin lifecycle events record telemetry without consuming Room
+context; consuming callbacks acknowledge Room generations after injection.
 
 Gaps follow from the harnesses themselves. Hive does not install cline's
 hook files — they are executables under `~/.cline/hooks` with no verified
@@ -896,11 +901,12 @@ files. Cline additionally exposes no Stop or SessionEnd hook event, so even
 with hooks registered a cline member cannot be told when a turn or session
 ends. Cursor, OpenHands, and opencode have no system-prompt flag
 (`prompt: hook` in `share/harness.sh`), so `bin/hive-launch` passes no launch
-flag and `bin/hive-hook` emits only Hive's short context block at SessionStart,
-not `share/member-instruction.md`. OpenHands reads `.openhands/hooks.json`
+flag. Their context hooks inject `share/member-instruction.md` along with
+member identity and Room updates. OpenHands reads `.openhands/hooks.json`
 (repository) or `~/.openhands/hooks.json` as a fallback; opencode reads
-`AGENTS.md`. The opencode bridge injects Room updates, not the member
-instruction.
+`AGENTS.md`. The OpenCode bridge appends context through the V1 system
+transform and tool-output hooks. Pi/OMP use documented custom messages and
+tool-result context. Session IDs come from the real vendor context for resume.
 
 Use their native lifecycle/tool hooks when available.
 

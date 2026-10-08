@@ -145,12 +145,12 @@ not install:
 | Codex (`codex`) | `codex` | `~/.codex/hooks.json` | `-c developer_instructions=<text>` | `resume <id>` |
 | Qwen Code (`qwen`) | `qwen` | `~/.qwen/settings.json` | `--append-system-prompt <text>` | `--resume <id>` |
 | Letta Code (`letta`) | `letta` | `~/.letta/settings.json` | `--system-custom <text>` (replaces the system prompt) | `--conversation <id>` |
-| Cursor CLI (`cursor`) | `agent` (not `cursor`) | `~/.cursor/hooks.json` | no launch flag; short context block only (below) | `--resume <chatId>` |
-| OpenHands (`openhands`) | `openhands` | `~/.openhands/hooks.json` | no launch flag; short context block only (below) | `--resume <id>` |
+| Cursor CLI (`cursor`) | `agent` (not `cursor`) | `~/.cursor/hooks.json` | SessionStart hook | `--resume <chatId>` |
+| OpenHands (`openhands`) | `openhands` | `~/.openhands/hooks.json` | SessionStart hook | `--resume <id>` |
 | Cline (`cline`) | `cline` | executable files in `~/.cline/hooks` (not installed by Hive) | `--system <text>` | `--id <session-id>` |
 | Oh My Pi (`omp`) | `omp` | `~/.omp/agent/hooks/pre/hive.js` (Hive-installed bridge) | `--append-system-prompt <text>` | `--resume <id>` |
 | pi (`pi`) | `pi` | `~/.pi/agent/extensions/hive.js` (Hive-installed bridge) | `--append-system-prompt <text>` | `--session <id>` |
-| opencode (`opencode`) | `opencode` | `~/.config/opencode/plugins/hive.js` (Hive-installed bridge) | no launch flag; short context block only (below) | `--session <id>` |
+| opencode (`opencode`, V1 plugin API) | `opencode` | `~/.config/opencode/plugins/hive.js` (Hive-installed bridge) | system transform hook | `--session <id>` |
 
 Gaps follow from the harnesses themselves.
 
@@ -163,17 +163,21 @@ session ends. Room awareness requires creating and registering them yourself.
 
 omp, pi, and opencode load their hooks as in-process JS/TS plugins, so Hive
 ships a small bridge module and installs it into each tool's plugin directory
-instead of writing a JSON settings file. omp's `tool_call` and `tool_result`
-handlers can return `additionalContext`, which is the channel Hive uses to
-deliver Room updates; pi and opencode inject through their own documented
-mechanisms.
+instead of writing a JSON settings file. Existing JSON settings and unrelated
+hooks are preserved when Hive registers its hooks. Shared bridge dependencies
+live outside plugin discovery directories under `~/.local/share/agentic-hive`.
 
-Cursor, OpenHands, and opencode have no system-prompt flag, so Hive passes no
-launch flag and its SessionStart hook emits only a short context block — member
-identity, nest path, active claims, and a reminder to re-anchor on the
-Beekeeper's latest intent — not the full member instruction. Rely on each
-vendor's own project instruction file where one is documented: opencode reads
-`AGENTS.md`, OpenHands reads hooks from `.openhands/hooks.json`.
+Pi/OMP startup sends a custom message; prompt submission returns a custom
+message, and tool results use OMP's `additionalContext` or Pi's message API.
+OpenCode lifecycle events record telemetry without consuming Room messages;
+its system transform and tool-output callbacks inject context. Bridge delivery
+is serialized and acknowledged after injection, so failed callbacks leave
+Room entries pending. Real session IDs are recorded for resume. These adapters
+target the APIs documented in [the bridge notes](share/hive-bridge/README.md).
+
+Cursor, OpenHands, and OpenCode receive the full member instruction through
+their context hooks, alongside member identity, nest path, active claims, and
+Room updates. Project instruction files still provide project-specific rules.
 
 ### Room: shared awareness and direct steering
 
@@ -432,9 +436,10 @@ proposal. No permanent designer role is needed.
 ## Current scope
 
 Hive targets systemd Linux and supports both a portable installer and a NixOS
-module, and includes launch and hook adapters for all seven supported
+module, and includes launch adapters for all ten supported
 harnesses: Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands,
-and Cline. OpenCode and stronger sandbox levels remain planned. The design
+and Cline, Oh My Pi, Pi, and OpenCode. Cline's lifecycle hooks remain manual;
+stronger sandbox levels remain planned. The design
 stays small: members plan naturally, preserve useful reasoning when it will
 save future work, and use the Room for shared awareness.
 

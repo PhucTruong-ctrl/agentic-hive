@@ -118,8 +118,7 @@ harness_fact() {
         openhands) printf '%s\n' stop ;;
         cline) printf '\n' ;;
         claude|codex|qwen|letta) printf '%s\n' Stop ;;
-        omp) printf '%s\n' turn_end ;;
-        pi) printf '%s\n' agent_before_settle ;;
+        omp|pi) printf '%s\n' agent_end ;;
         opencode) printf '%s\n' session.idle ;;
         *) return 1 ;;
       esac ;;

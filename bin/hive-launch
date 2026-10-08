@@ -47,13 +47,26 @@ install_hooks() {
     src_path="$SHARE/$src"
     if [[ -f $src_path ]]; then
       dest="$HOME/$mod"
-      mkdir -p "$(dirname "$dest")"
-      if [[ -f $dest && $(cat "$dest") == $(cat "$src_path") ]]; then
-        : # idempotent, unchanged
-      else
-        cp -a "$src_path" "$dest"
-        chmod 0644 "$dest"
-      fi
+      # Keep dependencies outside plugin auto-discovery directories. Use a file
+      # URL so spaces/quotes in HOME work, and preserve mtime on unchanged installs.
+      python3 - "$src_path" "$SHARE/hive-bridge/hive-runner.js" "$dest" "$HOME/.local/share/agentic-hive/hive-runner.js" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+source, dependency, destination, library = map(Path, sys.argv[1:])
+module = source.read_text().replace("'./hive-runner.js'", json.dumps(library.resolve().as_uri()))
+for path, content in ((library, dependency.read_text()), (destination, module)):
+    if path.is_file() and path.read_text() == content:
+        continue
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".")
+    with os.fdopen(fd, "w") as stream:
+        stream.write(content)
+        os.fchmod(stream.fileno(), 0o644)
+    os.replace(temporary, path)
+PY
     else
       echo "hive-launch: bridge source missing for $h: $src_path" >&2
     fi
@@ -106,8 +119,7 @@ install_hooks() {
       ;;
     *) return 0 ;;
   esac
-  mkdir -p "$(dirname "$f")"
-  [[ -f $f && $(cat "$f") == "$want" ]] || printf '%s\n' "$want" >"$f"
+  python3 "$SHARE/hive_config.py" merge "$f" <<<"$want" || die "could not register $h hooks; existing settings preserved"
 }
 
 # Inner mode: runs inside the tmux pane.
