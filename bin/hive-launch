@@ -94,6 +94,8 @@ if ! tmux has-session -t "=$session" 2>/dev/null; then
   tmux new-session -d -s "$session" -c "$dir" \
     -e "HIVE_MEMBER=$member" \
     -e "HIVE_ROOT=$HIVE_ROOT" \
+    -e "HIVE_USER=$HIVE_USER" \
+    -e "HIVE_BIN_DIR=${HIVE_BIN_DIR:-}" \
     -e "HIVE_SHARE=$SHARE" \
     -e "PATH=$PATH:$HIVE_ROOT/tools/bin" \
     -- "$0" --run "$harness" "$@"

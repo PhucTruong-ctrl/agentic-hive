@@ -25,7 +25,17 @@ sudo install/hive-install --beekeeper alice --uninstall
 | `--no-hooks` | off | Skip `/etc/claude-code/managed-settings.json`. |
 | `--no-deps` | off | Skip package installation (the package list is still printed). |
 | `--dry-run` | off | Print every action as `would ...`, change nothing. |
-| `--uninstall` | off | Remove exactly what a prior install created. |
+| `--uninstall` | off | Restore owned files and remove only accounts/groups created by this installer. |
+
+The root-only journal at `/var/lib/agentic-hive-install` records original files
+and account ownership across reinstalls. Use the same account, habitat, prefix,
+and Beekeeper options when uninstalling. Without a journal, uninstall refuses
+to guess ownership. Account homes and habitat data are always retained.
+
+Claude hooks are merged into existing managed settings. Existing permissions,
+hooks, and status lines are preserved. Uninstall restores the original file
+when unchanged; if policy was edited later, it removes only Hive's hooks and
+status line. Other modified installed files are retained.
 | `-h`, `--help` | — | Usage. |
 
 ## Staging with `DESTDIR`
