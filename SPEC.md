@@ -880,12 +880,12 @@ Delivery bookkeeping is deterministic adapter state.
 Semantic response happens only when useful.
 
 ### 12.5 Harness-specific adapters
-
 Adapters are table-driven, not separate implementations: `harness_fact
 <harness> <fact>` in [share/harness.sh](share/harness.sh) supplies each
 harness's executable, prompt flag, resume form, hook config, and event names,
 and `harness_list` enumerates the supported set — Claude Code, Codex, Qwen
-Code, Letta Code, Cursor CLI, OpenHands, and Cline.
+Code, Letta Code, Cursor CLI, OpenHands, Cline, Oh My Pi, pi, and opencode.
+Harnesses whose hooks are in-process plugins (Oh My Pi, pi, opencode) receive a shipped bridge module installed into their plugin directory; config-file harnesses receive a generated settings file.
 
 Gaps follow from the harnesses themselves. Hive does not install cline's
 hook files — they are executables under `~/.cline/hooks` with no verified
@@ -894,11 +894,13 @@ member instruction, but no lifecycle hooks at all: no Room delivery, not even
 at prompt submit, and no telemetry, unless the user creates and registers the
 files. Cline additionally exposes no Stop or SessionEnd hook event, so even
 with hooks registered a cline member cannot be told when a turn or session
-ends. Cursor and OpenHands have no system-prompt flag, so their member
-instruction rides the SessionStart hook instead of a launch flag. OpenHands
-reads hooks from the repository's `.openhands/hooks.json` first and only
-falls back to the user-level `~/.openhands/hooks.json` Hive writes when the
-repository has none.
+ends. Cursor, OpenHands, and opencode have no system-prompt flag
+(`prompt: hook` in `share/harness.sh`), so `bin/hive-launch` passes no launch
+flag and `bin/hive-hook` emits only Hive's short context block at SessionStart,
+not `share/member-instruction.md`. OpenHands reads `.openhands/hooks.json`
+(repository) or `~/.openhands/hooks.json` as a fallback; opencode reads
+`AGENTS.md`. The opencode bridge injects Room updates, not the member
+instruction.
 
 Use their native lifecycle/tool hooks when available.
 

@@ -28,9 +28,8 @@ require_harness() {
   harness_fact "$1" exe >/dev/null 2>&1 || die "unknown harness: $1 (supported: $harnesses)"
 }
 
-# Every vendor reads hooks from a different file in a different schema, so the
-# serialization is an explicit per-vendor case; one generic JSON generator
-# across five schemas would be guesswork.
+# Two mechanisms: vendor JSON config (most harnesses) vs shipped bridge
+# module (omp, pi, opencode) installed under $HOME.
 install_hooks() {
   local h="$1" hook cfg f v1 v2 v3 v4 v5 want
   # cline registers hooks as executable files in ~/.cline/hooks, not a config
@@ -40,7 +39,26 @@ install_hooks() {
     echo "hive-launch: cline loads hooks as executable files in ~/.cline/hooks (no settings file); Room awareness unavailable for cline" >&2
     return 0
   fi
+  local mod src src_path dest
   cfg=$(harness_fact "$h" hook_config || true)
+  mod=$(harness_fact "$h" hook_module || true)
+  if [[ -n $mod ]]; then
+    src=$(harness_fact "$h" hook_module_src || true)
+    src_path="$SHARE/$src"
+    if [[ -f $src_path ]]; then
+      dest="$HOME/$mod"
+      mkdir -p "$(dirname "$dest")"
+      if [[ -f $dest && $(cat "$dest") == $(cat "$src_path") ]]; then
+        : # idempotent, unchanged
+      else
+        cp -a "$src_path" "$dest"
+        chmod 0644 "$dest"
+      fi
+    else
+      echo "hive-launch: bridge source missing for $h: $src_path" >&2
+    fi
+    return 0
+  fi
   [[ -n $cfg ]] || return 0
   # Prefer the host-managed CLI directory so the file (and the harness's trust
   # hash for it) stays stable across host updates; fall back to PATH.
@@ -156,6 +174,7 @@ if ! tmux has-session -t "=$session" 2>/dev/null; then
     -e "HIVE_ROOT=$HIVE_ROOT" \
     -e "HIVE_SHARE=$SHARE" \
     -e "PATH=$PATH:$HIVE_ROOT/tools/bin" \
+    -e "HIVE_HARNESS=$harness" \
     -- "$0" --run "$harness" "$@"
   echo "hive-launch: started $session ($harness in $dir)"
 fi

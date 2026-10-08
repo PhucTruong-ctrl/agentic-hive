@@ -59,7 +59,7 @@ design to implementation without acquiring a permanent job title.
 
 ```mermaid
 flowchart TD
-    human["Beekeeper: intent, taste, authority"] --> members["Independent members: Claude Code / Codex / Qwen Code / Letta Code / Cursor CLI / OpenHands / Cline in tmux"]
+    human["Beekeeper: intent, taste, authority"] --> members["Independent members: Claude Code / Codex / Qwen Code / Letta Code / Cursor CLI / OpenHands / Cline / Oh My Pi / pi / opencode in tmux"]
     members <--> habitat["Shared projects, Room, claims, member nests"]
     dashboard["Browser dashboard and terminals"] --> members
     dashboard --> habitat
@@ -107,7 +107,7 @@ or approval queue.
 
 Imagine asking two members to make saved searches reliable. `nova` works on
 the API; `cedar` works on the client. Both have persistent sessions in `tmux`
-(Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, or Cline),
+(Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, Cline, Oh My Pi, pi, or opencode),
 can use the normal project tools, and can inspect the same files. Each keeps
 its identity as its focus changes.
 
@@ -145,22 +145,35 @@ not install:
 | Codex (`codex`) | `codex` | `~/.codex/hooks.json` | `-c developer_instructions=<text>` | `resume <id>` |
 | Qwen Code (`qwen`) | `qwen` | `~/.qwen/settings.json` | `--append-system-prompt <text>` | `--resume <id>` |
 | Letta Code (`letta`) | `letta` | `~/.letta/settings.json` | `--system-custom <text>` (replaces the system prompt) | `--conversation <id>` |
-| Cursor CLI (`cursor`) | `agent` (not `cursor`) | `~/.cursor/hooks.json` | no flag exists; the SessionStart hook supplies it | `--resume <chatId>` |
-| OpenHands (`openhands`) | `openhands` | `~/.openhands/hooks.json` | no flag exists; the SessionStart hook supplies it | `--resume <id>` |
+| Cursor CLI (`cursor`) | `agent` (not `cursor`) | `~/.cursor/hooks.json` | no launch flag; short context block only (below) | `--resume <chatId>` |
+| OpenHands (`openhands`) | `openhands` | `~/.openhands/hooks.json` | no launch flag; short context block only (below) | `--resume <id>` |
 | Cline (`cline`) | `cline` | executable files in `~/.cline/hooks` (not installed by Hive) | `--system <text>` | `--id <session-id>` |
+| Oh My Pi (`omp`) | `omp` | `~/.omp/agent/hooks/pre/hive.js` (Hive-installed bridge) | `--append-system-prompt <text>` | `--resume <id>` |
+| pi (`pi`) | `pi` | `~/.pi/agent/extensions/hive.js` (Hive-installed bridge) | `--append-system-prompt <text>` | `--session <id>` |
+| opencode (`opencode`) | `opencode` | `~/.config/opencode/plugins/hive.js` (Hive-installed bridge) | no launch flag; short context block only (below) | `--session <id>` |
 
-Gaps follow from the harnesses themselves. Hive writes no cline hook files —
-Cline loads hooks as executables in `~/.cline/hooks` — so a cline member gets
-launch, resume, and its member instruction, but no lifecycle hooks at all:
-no Room delivery, not even at prompt submit, and no telemetry. You can get
-Room awareness only by creating and registering those hook files yourself.
-Cline also has no Stop or SessionEnd hook event, so even then a cline member
-cannot be told when a turn ends or when its session ends. Cursor and
-OpenHands have no system-prompt flag, so their member instruction arrives
-through the SessionStart hook rather than a launch flag. OpenHands documents
-hooks per-repository in the project's `.openhands/hooks.json`; its
-user-level `~/.openhands/hooks.json` — the file Hive writes — loads only as
-a fallback when the repository has no hooks file of its own.
+Gaps follow from the harnesses themselves.
+
+Hive writes no cline hook files — Cline loads hooks as executables in
+`~/.cline/hooks` — so a cline member gets launch, resume, and its member
+instruction, but no lifecycle hooks at all: no Room delivery, not even at
+prompt submit, and no telemetry. Cline also has no Stop or SessionEnd event,
+so even once those files exist a cline member is not told when a turn or
+session ends. Room awareness requires creating and registering them yourself.
+
+omp, pi, and opencode load their hooks as in-process JS/TS plugins, so Hive
+ships a small bridge module and installs it into each tool's plugin directory
+instead of writing a JSON settings file. omp's `tool_call` and `tool_result`
+handlers can return `additionalContext`, which is the channel Hive uses to
+deliver Room updates; pi and opencode inject through their own documented
+mechanisms.
+
+Cursor, OpenHands, and opencode have no system-prompt flag, so Hive passes no
+launch flag and its SessionStart hook emits only a short context block — member
+identity, nest path, active claims, and a reminder to re-anchor on the
+Beekeeper's latest intent — not the full member instruction. Rely on each
+vendor's own project instruction file where one is documented: opencode reads
+`AGENTS.md`, OpenHands reads hooks from `.openhands/hooks.json`.
 
 ### Room: shared awareness and direct steering
 
@@ -201,7 +214,7 @@ and trigger optional desktop alerts while the dashboard is open. Click
 Incoming messages preserve keyboard focus and drafts; clicking Answer opens
 the reply composer. Members can continue independent work while awaiting human
 intent or taste, without blocking a Claude Code, Codex, Qwen Code, Letta Code,
-Cursor CLI, OpenHands, or Cline question dialog.
+Cursor CLI, OpenHands, Cline, Oh My Pi, pi, or opencode question dialog.
 
 ![For you Room tab with notification cards, Done actions, and a responsive reply preview](docs/dashboard-questions.png)
 
@@ -236,7 +249,7 @@ individual member:
 
 | Control | Action |
 | --- | --- |
-| **Terminal icon** | Attach the member's running terminal (Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, or Cline) inside the WebUI. |
+| **Terminal icon** | Attach the member's running terminal (Claude Code, Codex, Qwen Code, Letta Code, Cursor CLI, OpenHands, Cline, Oh My Pi, pi, or opencode) inside the WebUI. |
 | **Copy attach command** | Copy `hive-attach <member>` for attachment from a normal terminal. |
 | **Restart** | Restart the member's harness and resume its conversation. |
 | **Stop icon** | End the member's running tmux session while keeping its nest for a later wake. |
@@ -256,7 +269,7 @@ Stopped members expose **Wake** in place of the live-session controls:
 
 Click the terminal icon on a live member's card to open its existing `tmux`
 session in the browser. You can see the actual Claude Code, Codex, Qwen Code,
-Letta Code, Cursor CLI, OpenHands, or Cline interface, its tool activity, and
+Letta Code, Cursor CLI, OpenHands, Cline, Oh My Pi, pi, or opencode interface, its tool activity, and
 its responses. Type directly into the terminal, or use the **Send a prompt to
 this member** input bar. Font-size and fit controls help on smaller screens.
 Closing the browser terminal leaves the member running.
@@ -361,7 +374,7 @@ hive-launch cedar claude /srv/hive/projects/my-project
 ```
 
 The harness argument is one of `claude`, `codex`, `qwen`, `letta`, `cursor`,
-`openhands`, or `cline`; see [Supported harnesses](#supported-harnesses) for
+`openhands`, `cline`, `omp`, `pi`, or `opencode`; see [Supported harnesses](#supported-harnesses) for
 each harness's flags, hook config, and resume form.
 
 The dashboard defaults to `127.0.0.1:8080`. Anyone who can reach it can use its

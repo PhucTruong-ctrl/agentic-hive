@@ -5,10 +5,10 @@
 #                                  prints nothing and returns non-zero —
 #                                  never guess, never default.
 #   harness_list                   supported harnesses, sorted, one per line.
-# facts: exe resume hook_config out prompt event:<HiveEvent>
+# facts: exe resume hook_config hook_module hook_module_src out prompt event:<HiveEvent>
 
 harness_list() {
-  printf '%s\n' claude cline codex cursor letta openhands qwen
+  printf '%s\n' claude cline codex cursor letta omp openhands opencode pi qwen
 }
 
 harness_fact() {
@@ -18,7 +18,7 @@ harness_fact() {
     exe)
       case $1 in
         cursor) printf '%s\n' agent ;;
-        claude|codex|qwen|letta|openhands|cline) printf '%s\n' "$1" ;;
+        claude|codex|qwen|letta|openhands|cline|omp|pi|opencode) printf '%s\n' "$1" ;;
         *) return 1 ;;
       esac ;;
     # argv word the stored session id is appended to as its own argument;
@@ -28,6 +28,8 @@ harness_fact() {
         codex) printf '%s\n' resume ;;
         claude|qwen|cursor|openhands) printf '%s\n' --resume ;;
         letta) printf '%s\n' --conversation ;;
+        omp) printf '%s\n' --resume ;;
+        pi|opencode) printf '%s\n' --session ;;
         cline) printf '%s\n' --id ;;
         *) return 1 ;;
       esac ;;
@@ -44,6 +46,20 @@ harness_fact() {
         cursor) printf '%s\n' .cursor/hooks.json ;;
         openhands) printf '%s\n' .openhands/hooks.json ;;
         claude|cline) printf '\n' ;;
+        omp|pi|opencode) printf '\n' ;;
+        *) return 1 ;;
+      esac ;;
+    hook_module)
+      case $1 in
+        omp) printf '%s\n' .omp/agent/hooks/pre/hive.js ;;
+        pi) printf '%s\n' .pi/agent/extensions/hive.js ;;
+        opencode) printf '%s\n' .config/opencode/plugins/hive.js ;;
+        *) return 1 ;;
+      esac ;;
+    hook_module_src)
+      case $1 in
+        omp|pi) printf '%s\n' hive-bridge/pi-on.js ;;
+        opencode) printf '%s\n' hive-bridge/opencode.js ;;
         *) return 1 ;;
       esac ;;
     # shape hive-hook emits
@@ -52,6 +68,7 @@ harness_fact() {
         claude|codex|qwen|letta|cursor) printf '%s\n' claude ;;
         openhands) printf '%s\n' top ;;
         cline) printf '%s\n' mod ;;
+        omp|pi|opencode) printf '%s\n' claude ;;
         *) return 1 ;;
       esac ;;
     # how the member instruction text is injected
@@ -61,7 +78,9 @@ harness_fact() {
         codex) printf '%s\n' config:developer_instructions ;;
         letta) printf '%s\n' flag-replace:--system-custom ;;
         cline) printf '%s\n' flag-replace:--system ;;
-        cursor|openhands) printf '%s\n' hook ;; # no CLI flag; SessionStart hook instead
+        cursor|openhands) printf '%s\n' hook ;;
+        omp|pi) printf '%s\n' flag-append:--append-system-prompt ;;
+        opencode) printf '%s\n' hook ;; # no CLI flag; SessionStart hook instead
         *) return 1 ;;
       esac ;;
     # Hive event -> vendor hook event name; empty = no vendor equivalent
@@ -71,6 +90,8 @@ harness_fact() {
         openhands) printf '%s\n' session_start ;;
         cline) printf '%s\n' TaskStart ;;
         claude|codex|qwen|letta) printf '%s\n' SessionStart ;;
+        omp|pi) printf '%s\n' session_start ;;
+        opencode) printf '%s\n' session.created ;;
         *) return 1 ;;
       esac ;;
     event:UserPromptSubmit)
@@ -78,6 +99,8 @@ harness_fact() {
         cursor) printf '%s\n' beforeSubmitPrompt ;;
         openhands) printf '%s\n' user_prompt_submit ;;
         claude|codex|qwen|letta|cline) printf '%s\n' UserPromptSubmit ;;
+        omp|pi) printf '%s\n' before_agent_start ;;
+        opencode) printf '%s\n' chat.message ;;
         *) return 1 ;;
       esac ;;
     event:PostToolUse)
@@ -85,6 +108,8 @@ harness_fact() {
         cursor) printf '%s\n' postToolUse ;;
         openhands) printf '%s\n' post_tool_use ;;
         claude|codex|qwen|letta|cline) printf '%s\n' PostToolUse ;;
+        omp|pi) printf '%s\n' tool_result ;;
+        opencode) printf '%s\n' tool.execute.after ;;
         *) return 1 ;;
       esac ;;
     event:Stop)
@@ -93,6 +118,9 @@ harness_fact() {
         openhands) printf '%s\n' stop ;;
         cline) printf '\n' ;;
         claude|codex|qwen|letta) printf '%s\n' Stop ;;
+        omp) printf '%s\n' turn_end ;;
+        pi) printf '%s\n' agent_before_settle ;;
+        opencode) printf '%s\n' session.idle ;;
         *) return 1 ;;
       esac ;;
     event:SessionEnd)
@@ -101,6 +129,8 @@ harness_fact() {
         openhands) printf '%s\n' session_end ;;
         cline) printf '\n' ;;
         claude|codex|qwen|letta) printf '%s\n' SessionEnd ;;
+        omp|pi) printf '%s\n' session_shutdown ;;
+        opencode) printf '\n' ;;
         *) return 1 ;;
       esac ;;
     *) return 1 ;;
