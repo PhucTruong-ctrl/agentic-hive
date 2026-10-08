@@ -363,7 +363,8 @@ ProtectControlGroups=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# The dashboard launches Node/Bun harnesses; they need executable JIT memory.
+MemoryDenyWriteExecute=false
 SystemCallArchitectures=native
 Restart=on-failure
 RestartSec=2
