@@ -148,6 +148,7 @@ in
       path = [ cfg.package pkgs.bash pkgs.git pkgs.tmux ] ++ cfg.harnesses;
       environment = {
         HIVE_ROOT = cfg.root;
+        HIVE_BIN_DIR = "/run/current-system/sw/bin";
         # git refuses repos owned by another user unless marked safe.
         GIT_CONFIG_COUNT = "1";
         GIT_CONFIG_KEY_0 = "safe.directory";
@@ -179,7 +180,8 @@ in
         ];
         RestrictNamespaces = true;
         LockPersonality = true;
-        MemoryDenyWriteExecute = true;
+        # Member harnesses launched here may use Node/Bun JIT compilation.
+        MemoryDenyWriteExecute = false;
         SystemCallArchitectures = "native";
         Restart = "on-failure";
         RestartSec = 2;
