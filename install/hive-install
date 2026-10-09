@@ -440,8 +440,24 @@ EOF
 # --- tmux -------------------------------------------------------------------
 
 install_tmux() {
-  # Member sessions run on the hive user's tmux server, so a drop-in under
-  # /etc/tmux.conf.d is the least invasive way to configure them.
+  # tmux reads /etc/tmux.conf at server start and nothing else: it does not
+  # scan tmux.conf.d on its own. Without an include line the drop-in below is
+  # inert, which leaves members with mouse off, no wheel scrollback and the
+  # default 2000-line history. Create the include if the host has no
+  # /etc/tmux.conf, otherwise append one line to the file it already has.
+  local main=/etc/tmux.conf line="source-file /etc/tmux.conf.d/*.conf"
+  if [[ -n $STAGE ]]; then
+    note "skipping tmux include (DESTDIR)"
+  elif ! grep -qF "$line" "$main" 2>/dev/null; then
+    if [[ -e $main ]]; then
+      printf '\n# Added by hive-install.\n%s\n' "$line" >>"$main"
+      note "added tmux include to $main"
+    else
+      printf '#!/bin/sh\n# Added by hive-install.\n%s\n' "$line" >"$main"
+      note "created $main including tmux.conf.d"
+    fi
+  fi
+
   put_file 0644 "$(dest "$TMUX_CONF")" <<'EOF'
 # Member sessions are tmux; make attaching and copying painless:
 # mouse selection, OSC 52 clipboard (works over SSH), big scrollback.
