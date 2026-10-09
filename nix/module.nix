@@ -42,7 +42,9 @@ in
         claude-code
         codex
       ];
-      description = "Agent harnesses available to members.";
+      # omp has no nixpkgs attribute Hive can rely on; add your own build of
+      # it here (or to extraPackages) to make it available to members.
+      description = "Agent harnesses available to members. Hive also supports omp, which needs no entry here beyond being on PATH.";
     };
 
     extraPackages = lib.mkOption {

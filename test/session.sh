@@ -88,6 +88,14 @@ rg -q '^launch bob codex '"$HIVE_ROOT"'/projects/poke -- resume test-session con
 [[ ! -d $HIVE_ROOT/members/cedar ]]
 printf 'renamed member wakes its original conversation in the selected project folder\n'
 
+# omp resumes by session id too, using the same --resume flag as claude.
+printf '%s\n' '{"harness":"omp","dir":"'"$HIVE_ROOT/projects"'"}' >"$HIVE_ROOT/members/bob/state/launch.json"
+printf '%s\n' '{"session_id":"omp-session","harness":"omp"}' >"$HIVE_ROOT/telemetry/members/bob.json"
+: >"$HIVE_TEST_LOG"
+"$repo/bin/hive-member" send bob 'pick up where we left off' >/dev/null
+rg -q '^launch bob omp .* -- --resume omp-session pick up where we left off$' "$HIVE_TEST_LOG"
+printf 'omp member wakes its own conversation by session id\n'
+
 : >"$HIVE_TEST_LOG"
 printf '%s\n' '{"harness":"bash","dir":"/tmp"}' >"$HIVE_ROOT/members/bob/state/launch.json"
 printf '%s\n' '{"pid":99999,"harness":"bash","status":"idle"}' >"$HIVE_ROOT/telemetry/members/bob.json"
@@ -174,13 +182,26 @@ cat >"$tmp/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 printf 'codex %s\n' "$*" >>"$HIVE_TEST_LOG"
 EOF
-chmod +x "$tmp/bin/claude" "$tmp/bin/codex"
+cat >"$tmp/bin/omp" <<'EOF'
+#!/usr/bin/env bash
+printf 'omp %s\n' "$*" >>"$HIVE_TEST_LOG"
+EOF
+chmod +x "$tmp/bin/claude" "$tmp/bin/codex" "$tmp/bin/omp"
 printf 'member instruction\n' >"$tmp/share/member-instruction.md"
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run claude 'first task' </dev/null >/dev/null
 HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run codex 'first task' </dev/null >/dev/null
 rg -q '^claude --permission-mode auto .*first task$' "$HIVE_TEST_LOG"
 rg -q '^codex --approve-for-me --add-dir '"$HIVE_ROOT"' .*first task$' "$HIVE_TEST_LOG"
 printf 'autonomous launch flags applied\n'
+
+# omp installs its extension into the agent dir and appends the member brief.
+cp "$repo/share/omp-hive.js" "$tmp/share/omp-hive.js"
+PI_CODING_AGENT_DIR="$tmp/agentdir" HIVE_SHARE="$tmp/share" \
+  "$repo/bin/hive-launch" --run omp 'first task' </dev/null >/dev/null
+rg -q '^omp --append-system-prompt .*first task$' "$HIVE_TEST_LOG"
+[[ -f $tmp/agentdir/extensions/hive.js ]]
+cmp -s "$repo/share/omp-hive.js" "$tmp/agentdir/extensions/hive.js"
+printf 'omp launch installs its extension and appends the member brief\n'
 
 mkdir -p "$HIVE_ROOT/members/bob/notes" "$HIVE_ROOT/claims/demo"
 printf 'keep work here\n' >"$HIVE_ROOT/members/bob/notes/work.md"

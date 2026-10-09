@@ -251,7 +251,7 @@ cmd_wake() (
 
   if ((!fresh)) && [[ -n $sid ]]; then
     case $harness in
-      claude) args=(--resume "$sid") ;;
+      claude|omp) args=(--resume "$sid") ;;
       codex) args=(resume "$sid") ;;
     esac
     say "waking $m ($harness in $dir), resuming conversation $sid"

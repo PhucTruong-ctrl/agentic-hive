@@ -24,6 +24,13 @@ status=$("$bin/hive-member" status cedar)
 
 hook=$(HIVE_MEMBER=alice "$bin/hive-hook" claude SessionStart <<<'{"cwd":"/tmp"}')
 [[ $hook == *'cedar'* && $hook == *'poke'* ]]
+
+# omp reaches the same adapter through the shipped extension. The extension
+# itself lives in the share dir, so assert it ships and drives hive-hook.
+[[ -f "$(dirname "$bin")/share/agentic-hive/omp-hive.js" ]]
+omphook=$(HIVE_MEMBER=alice "$bin/hive-hook" omp SessionStart <<<'{"cwd":"/tmp"}')
+[[ $omphook == *'cedar'* && $omphook == *'poke'* ]]
+
 snapshot=$("$bin/hive-web" --dump)
 [[ $snapshot == *'"name": "cedar"'* && $snapshot == *'"team": "poke"'* ]]
 printf 'packaged commands work with an empty host PATH\n'

@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # hive-launch — start or attach a persistent member session in tmux.
 #
-#   hive-launch <member> [claude|codex] [dir] [-- harness args...]
+#   hive-launch <member> [claude|codex|omp] [dir] [-- harness args...]
 #   hive-launch --list
 #
 # Members run as the `hive` account. When invoked by another user (the
 # Beekeeper), re-executes itself through sudo.
+#
+# claude and codex integrate through command hooks declared in their own
+# settings files. omp has no such file: it loads extensions from its agent
+# directory, so Hive ships share/omp-hive.js and installs it there instead.
 set -euo pipefail
 
 HIVE_ROOT="${HIVE_ROOT:-/srv/hive}"
@@ -41,6 +45,27 @@ install_codex_hooks() {
   [[ -f $f && $(cat "$f") == "$want" ]] || printf '%s\n' "$want" >"$f"
 }
 
+# omp has no command-hook settings file: it loads extension modules from its
+# agent directory. Install ours there so ambient discovery picks it up.
+# PI_CODING_AGENT_DIR overrides that directory; otherwise it is ~/.omp/agent.
+install_omp_extension() {
+  local src="$SHARE/omp-hive.js" dest
+  dest="${PI_CODING_AGENT_DIR:-$HOME/.omp/agent}/extensions/hive.js"
+  if [[ ! -f $src ]]; then
+    echo "hive-launch: extension missing: $src; omp runs without Room awareness" >&2
+    return 0
+  fi
+  # Re-install in place on every launch so an upgraded Hive takes effect.
+  if [[ -f $dest ]] && cmp -s "$dest" "$src"; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")" 2>/dev/null || {
+    echo "hive-launch: cannot write $dest; omp runs without Room awareness" >&2
+    return 0
+  }
+  cp "$src" "$dest.tmp.$$" && chmod 0644 "$dest.tmp.$$" && mv -f "$dest.tmp.$$" "$dest"
+}
+
 # Inner mode: runs inside the tmux pane.
 if [[ ${1:-} == --run ]]; then
   shift
@@ -58,6 +83,11 @@ if [[ ${1:-} == --run ]]; then
       install_codex_hooks
       codex --approve-for-me --add-dir "$HIVE_ROOT" -c "developer_instructions=$(jq -Rs . <"$SHARE/member-instruction.md")" "$@" || true
       ;;
+    omp)
+      install_omp_extension
+      # approvalMode already defaults to yolo, so members run unattended.
+      omp --append-system-prompt "$(cat "$SHARE/member-instruction.md")" "$@" || true
+      ;;
     *) die "unknown harness: $harness" ;;
   esac
   echo
@@ -71,7 +101,7 @@ if [[ ${1:-} == --list ]]; then
   exit 0
 fi
 
-member="${1:-}"; [[ -n $member ]] || die "usage: hive-launch <member> [claude|codex] [dir] [-- args...]"
+member="${1:-}"; [[ -n $member ]] || die "usage: hive-launch <member> [claude|codex|omp] [dir] [-- args...]"
 shift
 harness=claude
 dir="$HIVE_ROOT/projects"
