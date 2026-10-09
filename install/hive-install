@@ -189,7 +189,8 @@ install_packages() {
       note "  $f: ${r#*|}"
     done
     note "Harnesses are installed by the user upstream — Hive never installs them:"
-    note "  claude: see https://claude.com/claude-code   codex: see the OpenAI Codex CLI   omp: see your omp install"
+    note "  claude: see https://claude.com/claude-code   codex: see the OpenAI Codex CLI"
+    note "  omp: npm @oh-my-pi/pi-coding-agent, and it needs bun >= 1.3.14 at runtime"
     if (( DO_DEPS )) && [[ -z $STAGE ]]; then
       die "install the packages above and re-run, or pass --no-deps"
     fi

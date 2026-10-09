@@ -335,6 +335,12 @@ discovery loads it. The extension only translates events — it calls the same
 `hive-hook` the other harnesses use, so Room delivery and telemetry behave
 identically across all three.
 
+omp is published to npm, not to your distribution or nixpkgs:
+`bun add -g @oh-my-pi/pi-coding-agent` (it declares `engines.bun >= 1.3.14` and
+its `bin/omp` runs under bun). On NixOS, supply your own build through the
+module's `services.agentic-hive.ompPackage`, which is `null` by default so a
+host without one still builds.
+
 The dashboard defaults to `127.0.0.1:8080`. Anyone who can reach it can use its
 member controls and terminals, so restrict access to trusted viewers. Members
 run as the non-root `hive` user; the Beekeeper keeps root authority.

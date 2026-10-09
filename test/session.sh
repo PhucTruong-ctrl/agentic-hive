@@ -203,6 +203,13 @@ rg -q '^omp --append-system-prompt .*first task$' "$HIVE_TEST_LOG"
 cmp -s "$repo/share/omp-hive.js" "$tmp/agentdir/extensions/hive.js"
 printf 'omp launch installs its extension and appends the member brief\n'
 
+# The exit notice must survive an unset HIVE_MEMBER: under `set -u` a bare
+# $HIVE_MEMBER aborted this line and swallowed the notice.
+out=$(env -u HIVE_MEMBER HIVE_SHARE="$tmp/share" "$repo/bin/hive-launch" --run claude </dev/null 2>&1) || true
+[[ $out == *'HIVE_MEMBER=unset'* ]]
+[[ $out != *'unbound variable'* ]]
+printf 'launch exit notice survives an unset HIVE_MEMBER\n'
+
 mkdir -p "$HIVE_ROOT/members/bob/notes" "$HIVE_ROOT/claims/demo"
 printf 'keep work here\n' >"$HIVE_ROOT/members/bob/notes/work.md"
 printf 'bob\n' >"$HIVE_ROOT/claims/demo/owner"

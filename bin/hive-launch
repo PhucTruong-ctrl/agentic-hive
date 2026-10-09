@@ -91,7 +91,9 @@ if [[ ${1:-} == --run ]]; then
     *) die "unknown harness: $harness" ;;
   esac
   echo
-  echo "[$harness exited — shell kept open; HIVE_MEMBER=$HIVE_MEMBER]"
+  # ${HIVE_MEMBER:-unset}: under `set -u` an unset HIVE_MEMBER would otherwise
+  # abort this line and lose the exit notice entirely.
+  echo "[$harness exited — shell kept open; HIVE_MEMBER=${HIVE_MEMBER:-unset}]"
   exec bash -l
 fi
 
