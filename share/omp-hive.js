@@ -17,12 +17,111 @@
 // Contract (SPEC §12): silent unless something new happened, never fails or
 // blocks the session, and inert unless HIVE_MEMBER names a member.
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
 
 // A wedged hive-hook must never wedge the agent loop, but silently dropping
 // Room mail is worse than waiting: a healthy call is ~100ms, so this bound
 // only ever applies to an already-broken install.
 const TIMEOUT_MS = 5000;
 const FOOTER_MAX = 80;
+const QUOTA_TTL_MS = 10 * 60 * 1000; // `omp usage` costs a full process start
+let quotaAt = 0;
+
+// Quota only exists for providers that implement a usage reporter, so ask for
+// every provider and keep whatever comes back. omp answers "no reports" for
+// the rest, which is how they stay off the dashboard without a hardcoded list.
+async function collectQuota(member) {
+  const now = Date.now();
+  if (now - quotaAt < QUOTA_TTL_MS) return;
+  quotaAt = now;
+  const root = process.env.HIVE_ROOT;
+  if (!root) return;
+  let out;
+  try {
+    out = await new Promise((resolve) => {
+      let text = "";
+      let child;
+      try {
+        child = spawn("omp", ["usage", "--json", "--redact"], { cwd: process.cwd() });
+      } catch {
+        return resolve(null);
+      }
+      const timer = setTimeout(() => child.kill("SIGKILL"), 20000);
+      child.on("error", () => {
+        clearTimeout(timer);
+        resolve(null);
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolve(text);
+      });
+      child.stdout.on("data", (chunk) => {
+        text += chunk;
+      });
+      child.stderr.on("data", () => {});
+      child.stdin.end();
+    });
+  } catch {
+    return;
+  }
+  if (!out) return;
+  let data;
+  try {
+    data = JSON.parse(out);
+  } catch {
+    return;
+  }
+  // One provider can hold several authenticated accounts, and each returns its
+  // own window under the same id (openai-codex gave two "30 days"). Collapse
+  // those into one row per window keeping the worst usage, since that is the
+  // limit the member will hit first.
+  const byProvider = new Map();
+  for (const report of data.reports || []) {
+    const provider = report.provider;
+    if (!provider) continue;
+    const entry = byProvider.get(provider) || new Map();
+    for (const limit of report.limits || []) {
+      const fraction = limit.amount?.usedFraction;
+      const percent =
+        typeof fraction === "number" ? Math.round(fraction * 1000) / 10 : null;
+      const resets = limit.window?.resetsAt ? Math.round(limit.window.resetsAt / 1000) : null;
+      const name = limit.label || limit.id || "limit";
+      const seen = entry.get(name);
+      if (!seen) {
+        entry.set(name, { name, used_percent: percent, resets_at: resets });
+      } else {
+        if (percent != null && (seen.used_percent == null || percent > seen.used_percent)) {
+          seen.used_percent = percent;
+        }
+        if (resets != null && (!seen.resets_at || resets < seen.resets_at)) {
+          seen.resets_at = resets;
+        }
+      }
+    }
+    if (entry.size) byProvider.set(provider, entry);
+  }
+  const dir = `${root}/telemetry/quota`;
+  try {
+    await fs.mkdir(dir, { recursive: true });
+  } catch {
+    return;
+  }
+  const stamp = new Date().toISOString();
+  await Promise.all(
+    [...byProvider].map(([provider, entry]) =>
+      fs.writeFile(
+        `${dir}/omp-${provider}.json`,
+        `${JSON.stringify({
+          harness: "omp",
+          provider,
+          updated_at: stamp,
+          reported_by: member,
+          windows: [...entry.values()],
+        })}\n`,
+      ).catch(() => {}),
+    ),
+  );
+}
 
 export default function hiveExtension(pi) {
   if (!process.env.HIVE_MEMBER) return; // the Beekeeper's own session
@@ -90,8 +189,18 @@ export default function hiveExtension(pi) {
     }
   });
 
+  // Fire and forget: a member must not wait on a quota fetch to boot.
+  void collectQuota(process.env.HIVE_MEMBER).catch(() => {});
+
   pi.on("session_shutdown", (_event, ctx) => {
     void call("SessionEnd", { cwd: ctx.cwd });
+  });
+
+  // Refresh on every settle; collectQuota throttles itself to one fetch per
+  // TTL, so an active member does not pay for it on each turn.
+  pi.on("session_stop", (event, ctx) => {
+    void call("Stop", { cwd: ctx.cwd, session_id: event.session_id ?? "" });
+    void collectQuota(process.env.HIVE_MEMBER).catch(() => {});
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
