@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# hive-install — portable Agentic Hive installer: the equivalent of the NixOS
+# module (nix/module.nix) for hosts that are not NixOS.
+#
+# It declares the same host physics only: the non-root `hive` account, the
+# habitat root, shared assets, the systemd units and the Claude Code adapter
+# hooks. Everything OS-specific lives here — bin/ and share/ stay agnostic so
+# the same commands install on any distro.
+set -euo pipefail
+umask 0002
+
+die() { printf 'hive-install: %s\n' "$*" >&2; exit 1; }
+say() { printf 'hive-install: %s\n' "$*" >&2; }
+note() { printf '%s\n' "$*"; }
+
+HIVE_USER=hive
+HIVE_GROUP=hive
+HIVE_ROOT=/srv/hive
+PREFIX=/usr/local
+PORT=8080
+ADDRESS=127.0.0.1
+BEEKEEPER=
+DO_WEB=1
+DO_HOOKS=1
+DO_DEPS=1
+DRY_RUN=0
+UNINSTALL=0
+
+usage() {
+  cat <<'EOF'
+Usage: hive-install --beekeeper <user> [options]
+
+  --beekeeper <user>   human account added to the hive group and given
+                       NOPASSWD sudo to the hive user (required)
+  --hive-user <name>   habitat account to create          (default hive)
+  --hive-group <name>  habitat group to create            (default hive)
+  --hive-root <dir>    mutable habitat root               (default /srv/hive)
+  --prefix <dir>       install prefix                     (default /usr/local)
+  --port <n>           dashboard port                     (default 8080)
+                       below 1024 grants CAP_NET_BIND_SERVICE to hive-web
+  --address <addr>     dashboard bind address             (default 127.0.0.1)
+  --no-web             do not install hive-web.service
+  --no-hooks           do not install /etc/claude-code/managed-settings.json
+  --no-deps            do not install packages (the list is still printed)
+  --dry-run            print every action as "would ...", change nothing
+  --uninstall          remove exactly what a prior install created
+  -h, --help           this text
+
+Environment:
+  DESTDIR   stage every absolute path under this prefix. User/group creation,
+            tmpfiles, systemctl and package installation are then skipped, and
+            root is not required.
+EOF
+}
+
+while (($#)); do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --beekeeper) BEEKEEPER=${2:-}; shift 2 ;;
+    --hive-user) HIVE_USER=${2:-}; shift 2 ;;
+    --hive-group) HIVE_GROUP=${2:-}; shift 2 ;;
+    --hive-root) HIVE_ROOT=${2:-}; shift 2 ;;
+    --prefix) PREFIX=${2:-}; shift 2 ;;
+    --port) PORT=${2:-}; shift 2 ;;
+    --address) ADDRESS=${2:-}; shift 2 ;;
+    --no-web) DO_WEB=0; shift ;;
+    --no-hooks) DO_HOOKS=0; shift ;;
+    --no-deps) DO_DEPS=0; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --uninstall) UNINSTALL=1; shift ;;
+    --) shift; break ;;
+    -*) die "unknown option: $1" ;;
+    *) die "unexpected argument: $1" ;;
+  esac
+done
+
+DESTDIR=${DESTDIR:-}
+DESTDIR=${DESTDIR%/}
+[[ -z $DESTDIR ]] || DESTDIR=$(readlink -m -- "$DESTDIR")
+STAGE=
+[[ -n $DESTDIR ]] && STAGE=1
+
+[[ -n $BEEKEEPER ]] || die "--beekeeper <user> is required"
+[[ $BEEKEEPER =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid user name: $BEEKEEPER"
+[[ $HIVE_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid hive user: $HIVE_USER"
+[[ $HIVE_GROUP =~ ^[a-z_][a-z0-9_-]*$ ]] || die "invalid hive group: $HIVE_GROUP"
+[[ $HIVE_ROOT == /* ]] || die "--hive-root must be absolute: $HIVE_ROOT"
+[[ $PREFIX == /* ]] || die "--prefix must be absolute: $PREFIX"
+[[ $PREFIX != / ]] || die "--prefix must not be /"
+[[ $PORT =~ ^[0-9]+$ ]] && (( PORT >= 1 && PORT <= 65535 )) || die "invalid --port: $PORT"
+[[ -n $ADDRESS ]] || die "--address must not be empty"
+
+# Root is only needed to touch the host: staging and dry runs write nowhere.
+if [[ -z $STAGE ]] && (( ! DRY_RUN )); then
+  (( EUID == 0 )) || die "must run as root (or set DESTDIR, or pass --dry-run)"
+fi
+
+BIN_DIR="$PREFIX/bin"
+SHARE_DIR="$PREFIX/share/agentic-hive"
+HIVE_HOME="/home/$HIVE_USER"
+
+UNIT_DIR=/etc/systemd/system
+INIT_UNIT=$UNIT_DIR/agentic-hive-init.service
+WEB_UNIT=$UNIT_DIR/hive-web.service
+TMPFILES=/etc/tmpfiles.d/agentic-hive.conf
+SUDOERS=/etc/sudoers.d/agentic-hive
+PROFILE=/etc/profile.d/agentic-hive.sh
+TMUX_CONF=/etc/tmux.conf.d/agentic-hive.conf
+HOOKS=/etc/claude-code/managed-settings.json
+
+BIN_FILES=(hive hive-hook hive-launch hive-dash hive-web hive-attach hive-statusline hive-member hive-session)
+SHARE_FILES=(member-instruction.md dashboard.html xterm.js xterm.css hive_members.py hive_config.py)
+
+# Assets ship next to this script in the repo (install/ sits beside bin/ and share/).
+HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+SRC=$(dirname -- "$HERE")
+STATE_DIR="$DESTDIR/var/lib/agentic-hive-install"
+STATE_HELPER="$HERE/hive-state.py"
+state() { python3 "$STATE_HELPER" "$STATE_DIR" "$@"; }
+state_set() { (( DRY_RUN )) || state set "$@"; }
+remember_file() { (( DRY_RUN )) || state remember "$1"; }
+record_file() { (( DRY_RUN )) || state record "$1"; }
+state_options() {
+  jq -n --arg user "$HIVE_USER" --arg group "$HIVE_GROUP" --arg root "$HIVE_ROOT" \
+    --arg prefix "$PREFIX" --arg beekeeper "$BEEKEEPER" \
+    '{user:$user, group:$group, root:$root, prefix:$prefix, beekeeper:$beekeeper}'
+}
+
+dest() { printf '%s%s' "$DESTDIR" "$1"; }
+
+act() { # act <description> <command...>  — mutate, or announce under --dry-run
+  local what=$1; shift
+  if (( DRY_RUN )); then printf 'would %s\n' "$what"; return 0; fi
+  "$@"
+  printf '%s\n' "$what"
+}
+
+act_ok() { # act_ok <description> <command...>  — tolerate failure (cleanup)
+  local what=$1; shift
+  if (( DRY_RUN )); then printf 'would %s\n' "$what"; return 0; fi
+  "$@" >/dev/null 2>&1 || true
+  printf '%s\n' "$what"
+}
+
+put_file() { # put_file <mode> <path>  — stdin becomes the file, replacing it
+  local mode=$1 path=$2 tmp
+  if (( DRY_RUN )); then printf 'would write %s\n' "$path"; cat >/dev/null; return 0; fi
+  remember_file "$path"
+  mkdir -p -- "$(dirname -- "$path")"
+  # Write-then-rename: a read-only 0440 sudoers file must still be replaceable
+  # on re-install, and appending would duplicate the rule on every run.
+  tmp=$path.tmp.$$
+  cat >"$tmp"
+  chmod "$mode" "$tmp"
+  mv -f -- "$tmp" "$path"
+  record_file "$path"
+  printf 'wrote %s\n' "$path"
+}
+
+# --- packages ---------------------------------------------------------------
+# One case row per family: adding a family later is one new block.
+
+pkg_family() {
+  local m
+  for m in pacman apt-get dnf zypper; do
+    command -v "$m" >/dev/null 2>&1 && { printf '%s' "$m"; return 0; }
+  done
+  printf 'unknown'
+}
+
+# family_row <family> -> "<install command>|<packages>"
+family_row() {
+  case $1 in
+    pacman)  printf '%s' 'pacman -S --needed --noconfirm|bash python jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
+    apt-get) printf '%s' 'apt-get install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses-bin' ;;
+    dnf)     printf '%s' 'dnf install -y|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
+    zypper)  printf '%s' 'zypper --non-interactive install|bash python3 jq gawk util-linux coreutils git tmux ripgrep acl grep sed findutils sudo ncurses' ;;
+    *) return 1 ;;
+  esac
+}
+
+install_packages() {
+  local family row cmd pkgs f r
+  family=$(pkg_family)
+  if ! row=$(family_row "$family"); then
+    say "no known package manager on this host; install these by hand:"
+    for f in pacman apt-get dnf zypper; do
+      r=$(family_row "$f")
+      note "  $f: ${r#*|}"
+    done
+    note "Harnesses are installed by the user upstream — Hive never installs them:"
+    note "  claude: see https://claude.com/claude-code   codex: see the OpenAI Codex CLI"
+    if (( DO_DEPS )) && [[ -z $STAGE ]]; then
+      die "install the packages above and re-run, or pass --no-deps"
+    fi
+    return 0
+  fi
+  cmd=${row%%|*}
+  pkgs=${row#*|}
+  note "packages ($family): $pkgs"
+  if (( ! DO_DEPS )); then
+    note "skipping package installation (--no-deps)"
+    return 0
+  fi
+  if [[ -n $STAGE ]]; then
+    note "skipping package installation (DESTDIR)"
+    return 0
+  fi
+  act "installed packages: $pkgs" $cmd $pkgs
+}
+
+# --- account ----------------------------------------------------------------
+
+create_account() {
+  if [[ -n $STAGE ]]; then
+    note "skipping account setup (DESTDIR)"
+    return 0
+  fi
+  if ! getent group "$HIVE_GROUP" >/dev/null 2>&1; then
+    act "created group $HIVE_GROUP" groupadd "$HIVE_GROUP"
+    state_set created_group true
+  fi
+  if ! id -u "$HIVE_USER" >/dev/null 2>&1; then
+    act "created user $HIVE_USER" useradd --create-home --home-dir "$HIVE_HOME" \
+      --shell /bin/bash --comment "Agentic Hive members" --gid "$HIVE_GROUP" "$HIVE_USER"
+    state_set created_user true
+    act "set $HIVE_HOME mode 0750" chmod 0750 "$HIVE_HOME"
+  else
+    # Reusing an account must not change its home or permissions.
+    HIVE_HOME=$(getent passwd "$HIVE_USER" | cut -d: -f6)
+    [[ -d $HIVE_HOME ]] || die "existing account has no home directory: $HIVE_HOME"
+  fi
+  if ! id -nG "$BEEKEEPER" | tr ' ' '\n' | grep -qxF "$HIVE_GROUP"; then
+    act "added $BEEKEEPER to group $HIVE_GROUP" usermod -aG "$HIVE_GROUP" "$BEEKEEPER"
+    state_set added_membership true
+  fi
+}
+
+# --- shared assets ----------------------------------------------------------
+
+install_files() {
+  local f
+  for f in "${BIN_FILES[@]}"; do
+    remember_file "$(dest "$BIN_DIR/$f")"
+    act "installed $BIN_DIR/$f" install -D -m 0755 "$SRC/bin/$f" "$(dest "$BIN_DIR/$f")"
+    record_file "$(dest "$BIN_DIR/$f")"
+  done
+  for f in "${SHARE_FILES[@]}"; do
+    remember_file "$(dest "$SHARE_DIR/$f")"
+    act "installed $SHARE_DIR/$f" install -D -m 0644 "$SRC/share/$f" "$(dest "$SHARE_DIR/$f")"
+    record_file "$(dest "$SHARE_DIR/$f")"
+  done
+}
+
+# --- habitat ----------------------------------------------------------------
+
+install_tmpfiles() {
+  put_file 0644 "$(dest "$TMPFILES")" <<EOF
+# Setgid + default ACL: everything created in the habitat stays
+# group-writable for hive and the Beekeeper regardless of umask.
+d $HIVE_ROOT 2770 $HIVE_USER $HIVE_GROUP -
+a+ $HIVE_ROOT - - - - default:group:$HIVE_GROUP:rwX,group:$HIVE_GROUP:rwX,default:user:$HIVE_USER:rwX
+EOF
+  if [[ -n $STAGE ]]; then
+    note "skipping tmpfiles application (DESTDIR)"
+    return 0
+  fi
+  act "applied habitat tmpfiles" systemd-tmpfiles --create "$TMPFILES"
+}
+
+# --- sudoers ----------------------------------------------------------------
+
+install_sudoers() {
+  local f
+  f=$(dest "$SUDOERS")
+  # Written fresh each run so re-installs never duplicate the rule.
+  put_file 0440 "$f" <<EOF
+$BEEKEEPER ALL=($HIVE_USER) NOPASSWD: ALL
+EOF
+  if (( DRY_RUN )); then return 0; fi
+  command -v visudo >/dev/null 2>&1 && { visudo -cf "$f" >/dev/null || die "invalid sudoers file: $f"; }
+}
+
+# --- login profile ----------------------------------------------------------
+
+install_profile() {
+  put_file 0644 "$(dest "$PROFILE")" <<EOF
+# Hive commands and shared assets for login shells.
+export HIVE_SHARE=$SHARE_DIR
+export HIVE_USER=$HIVE_USER
+export HIVE_ROOT=$HIVE_ROOT
+export HIVE_BIN_DIR=$BIN_DIR
+case ":\$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *) export PATH="$BIN_DIR:\$PATH" ;;
+esac
+EOF
+}
+
+# --- systemd ----------------------------------------------------------------
+
+install_units() {
+  local cap=''
+  if (( PORT < 1024 )); then
+    cap="AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE"
+  fi
+
+  put_file 0644 "$(dest "$INIT_UNIT")" <<EOF
+[Unit]
+Description=Initialize Agentic Hive habitat (idempotent)
+After=systemd-tmpfiles-setup.service
+
+[Service]
+Type=oneshot
+User=$HIVE_USER
+Group=$HIVE_GROUP
+UMask=0002
+Environment=HIVE_ROOT=$HIVE_ROOT
+Environment=HIVE_USER=$HIVE_USER
+Environment=HIVE_SHARE=$SHARE_DIR
+Environment=HIVE_BIN_DIR=$BIN_DIR
+ExecStart=$BIN_DIR/hive init
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  if (( DO_WEB )); then
+    put_file 0644 "$(dest "$WEB_UNIT")" <<EOF
+[Unit]
+Description=Agentic Hive Beekeeper dashboard
+After=network.target agentic-hive-init.service
+
+[Service]
+User=$HIVE_USER
+Group=$HIVE_GROUP
+Environment=HIVE_ROOT=$HIVE_ROOT
+Environment=HIVE_USER=$HIVE_USER
+Environment=HIVE_SHARE=$SHARE_DIR
+Environment=HIVE_BIN_DIR=$BIN_DIR
+# git refuses repos owned by another user unless marked safe.
+Environment=GIT_CONFIG_COUNT=1
+Environment=GIT_CONFIG_KEY_0=safe.directory
+Environment=GIT_CONFIG_VALUE_0=*
+# Web controls launch member harnesses and a host shell through this
+# service. Their binaries must be in its PATH, not only the login profile.
+Environment=PATH=$BIN_DIR:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+$cap
+ExecStart=$BIN_DIR/hive-web --address $ADDRESS --port $PORT
+NoNewPrivileges=true
+ProtectSystem=strict
+# The browser host shell needs the hive account's own home for history
+# and normal CLI configuration; Unix permissions still separate users.
+ProtectHome=false
+# CLI delivery/probes and harnesses use mktemp. Keep /tmp shared so
+# dashboard clients can reach the existing tmux server sockets there.
+ReadWritePaths=$HIVE_ROOT $HIVE_HOME /tmp
+PrivateTmp=false
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+# The dashboard launches Node/Bun harnesses; they need executable JIT memory.
+MemoryDenyWriteExecute=false
+SystemCallArchitectures=native
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  fi
+
+  if [[ -n $STAGE ]]; then
+    note "skipping systemctl (DESTDIR)"
+    return 0
+  fi
+  act "reloaded systemd" systemctl daemon-reload
+  act "enabled agentic-hive-init.service" systemctl enable --now agentic-hive-init.service
+  if (( DO_WEB )); then
+    act "enabled hive-web.service" systemctl enable --now hive-web.service
+  fi
+}
+
+# --- Claude Code hooks ------------------------------------------------------
+
+install_hooks() {
+  if (( ! DO_HOOKS )); then
+    note "skipping Claude Code hooks (--no-hooks)"
+    return 0
+  fi
+  local desired hook_path existed=0
+  desired=$(cat <<EOF
+{
+  "statusLine": {
+    "type": "command",
+    "command": "$BIN_DIR/hive-statusline",
+    "padding": 0
+  },
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "$BIN_DIR/hive-hook claude SessionStart" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "$BIN_DIR/hive-hook claude UserPromptSubmit" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "$BIN_DIR/hive-hook claude PostToolUse" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "$BIN_DIR/hive-hook claude Stop" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "$BIN_DIR/hive-hook claude SessionEnd" } ] }
+    ]
+  }
+}
+EOF
+)
+  if (( DRY_RUN )); then note "would merge Hive hooks into $HOOKS"; return 0; fi
+  [[ ! -e $(dest "$HOOKS") ]] || existed=1
+  # The config merger preserves symlinks by updating their target. Journal
+  # that target, rather than the unchanged symlink, so uninstall restores it.
+  hook_path=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$(dest "$HOOKS")")
+  if [[ -n $STAGE && $hook_path != "$DESTDIR/"* ]]; then
+    die "staged hook settings resolve outside DESTDIR: $hook_path"
+  fi
+  remember_file "$hook_path"
+  state set managed_hooks "$(jq -n --arg path "$hook_path" --argjson desired "$desired" '{path:$path,desired:$desired}')"
+  python3 "$SRC/share/hive_config.py" merge "$hook_path" <<<"$desired"
+  (( existed )) || chmod 0644 "$(dest "$HOOKS")"
+  record_file "$hook_path"
+}
+
+# --- tmux -------------------------------------------------------------------
+
+install_tmux() {
+  # Member sessions run on the hive user's tmux server, so a drop-in under
+  # /etc/tmux.conf.d is the least invasive way to configure them.
+  put_file 0644 "$(dest "$TMUX_CONF")" <<'EOF'
+# Member sessions are tmux; make attaching and copying painless:
+# mouse selection, OSC 52 clipboard (works over SSH), big scrollback.
+set -g history-limit 100000
+set -g default-terminal tmux-256color
+set -g mouse on
+set -g set-clipboard on
+set -as terminal-features ',*:clipboard'
+set -g allow-passthrough on
+set -g focus-events on
+set -sg escape-time 10
+# Keep the selection after a mouse drag instead of jumping to the bottom.
+unbind -T copy-mode MouseDragEnd1Pane
+unbind -T copy-mode-vi MouseDragEnd1Pane
+bind -T copy-mode MouseDragEnd1Pane send -X copy-selection-no-clear
+bind -T copy-mode-vi MouseDragEnd1Pane send -X copy-selection-no-clear
+set -g status-right ' #S · %H:%M '
+EOF
+}
+
+# --- uninstall --------------------------------------------------------------
+
+uninstall() {
+  local f
+  if [[ -n $STAGE ]]; then
+    note "skipping systemctl (DESTDIR)"
+  else
+    act_ok "disabled hive-web.service" systemctl disable --now hive-web.service
+    act_ok "disabled agentic-hive-init.service" systemctl disable --now agentic-hive-init.service
+  fi
+  if (( DRY_RUN )); then
+    note "would restore installer-owned files using $STATE_DIR/state.json"
+  else
+    state restore
+  fi
+  # The habitat is mutable shared state (SPEC 4.1), not installer-owned tree, so
+  # it survives uninstall like it does on the NixOS backend. Say so plainly.
+  note ""
+  note "habitat left in place at $HIVE_ROOT"
+  note "  it holds the Beekeeper's work: projects/, member nests, claims,"
+  note "  Room history and the Knowledge Vault"
+  note "  uninstall never removes habitat state — delete $HIVE_ROOT yourself if you mean to"
+  if [[ -z $STAGE ]]; then
+    act_ok "reloaded systemd" systemctl daemon-reload
+    if [[ $(state get added_membership) == true ]]; then
+      act "removed $BEEKEEPER from group $HIVE_GROUP" gpasswd -d "$BEEKEEPER" "$HIVE_GROUP"
+      state_set added_membership false
+    fi
+    if [[ $(state get created_user) == true ]]; then
+      # Credentials and conversation files are mutable data, even for an account we created.
+      act "removed installer-created user $HIVE_USER (home retained)" userdel "$HIVE_USER"
+      state_set created_user false
+    fi
+    if [[ $(state get created_group) == true ]]; then
+      act "removed installer-created group $HIVE_GROUP" groupdel "$HIVE_GROUP"
+      state_set created_group false
+    fi
+  fi
+  act "removed installation journal" rm -rf -- "$STATE_DIR"
+}
+
+# --- summary ----------------------------------------------------------------
+
+summary() {
+  note ""
+  if [[ -n $STAGE ]]; then
+    note "Staged install under $DESTDIR (packages, accounts, tmpfiles and systemd skipped)."
+    return 0
+  fi
+  note "Hive installed."
+  note "  hive account:  $HIVE_USER (group $HIVE_GROUP), home $HIVE_HOME"
+  note "  habitat:       $HIVE_ROOT"
+  note "  commands:      $BIN_DIR"
+  if (( DO_WEB )); then
+    note "  dashboard:     http://$ADDRESS:$PORT/"
+  fi
+  note "  group '$HIVE_GROUP' membership is applied now but only takes effect on"
+  note "  the Beekeeper's next login — log out and back in."
+  if (( DO_WEB )); then
+    if [[ $ADDRESS == 127.0.0.1 || $ADDRESS == ::1 || $ADDRESS == localhost ]]; then
+      note "  firewall:      default is localhost-only; Hive never edits your firewall."
+    else
+      say "WARNING: hive-web is bound to $ADDRESS. Anyone who reaches the dashboard"
+      say "can drive member terminals and the host shell as the $HIVE_USER user."
+    fi
+    note "  to expose the dashboard, open the port yourself, e.g.:"
+    note "    sudo ufw allow $PORT/tcp    # or: sudo firewall-cmd --add-port=$PORT/tcp"
+  fi
+  note ""
+  note "Sign in to the agent harnesses as $HIVE_USER (Hive never installs them):"
+  note "  sudo -u $HIVE_USER -i claude"
+  note "  sudo -u $HIVE_USER -i codex login"
+}
+
+# --- main -------------------------------------------------------------------
+if (( UNINSTALL )); then
+  [[ -f $STATE_DIR/state.json ]] || die "no installation ownership journal; refusing to remove untracked files or accounts"
+  if (( ! DRY_RUN )); then state init "$(state_options)"; fi
+  uninstall
+  note "Hive uninstalled."
+  exit 0
+fi
+
+if [[ ! -d $SRC/bin || ! -d $SRC/share ]]; then
+  die "cannot find bin/ and share/ next to hive-install ($SRC)"
+fi
+
+install_packages
+if (( ! DRY_RUN )); then state init "$(state_options)"; fi
+create_account
+install_files
+install_tmpfiles
+install_sudoers
+install_profile
+install_units
+install_hooks
+install_tmux
+summary

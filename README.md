@@ -62,7 +62,7 @@ flowchart TD
     members <--> habitat["Shared projects, Room, claims, member nests"]
     dashboard["Browser dashboard and terminals"] --> members
     dashboard --> habitat
-    unix["NixOS / Unix: environment and process mechanics"] --> habitat
+    unix["Linux: environment and process mechanics"] --> habitat
 ```
 
 Each member has its own conversation and named `tmux` session. Members use
@@ -294,22 +294,22 @@ hive-member configure atlas --dir /srv/hive/projects/titantwoshot
 See [SPEC.md](SPEC.md) for the detailed model and
 [docs/INCIDENTS.md](docs/INCIDENTS.md) for refinements motivated by live use.
 
-## Quick start on NixOS
+## Quick start on Linux
 
-Clone the repository and import its module in `/etc/nixos/configuration.nix`:
+The portable installer works on Arch, Ubuntu, Mint, Fedora, and Debian. Clone
+the repository and run it with the account that will operate Hive:
 
 ```sh
 git clone https://github.com/tctinh/agentic-hive.git ~/agentic-hive
+cd agentic-hive
+sudo ./install/hive-install --beekeeper "$USER"
 ```
 
-```nix
-imports = [ /home/YOUR_USER/agentic-hive/nix/module.nix ];
-services.agentic-hive = { enable = true; beekeeper = "YOUR_USER"; };
-```
-
-Replace `YOUR_USER` with the account that will operate Hive, then run
-`sudo nixos-rebuild switch`. Log out and back in to pick up the new `hive`
-group membership. Rebuild after pulling updates to install newer code.
+It installs the `hive` account, the `/srv/hive` habitat, the `hive-web`
+dashboard service, and the Claude Code hooks. Dependencies are detected and
+installed with the system's own package manager, or printed when it cannot
+install them. `--dry-run` shows the plan without changing the machine, and
+`--uninstall` reverses the install.
 
 Sign in to each harness once as the `hive` user:
 
@@ -325,10 +325,28 @@ hive-launch nova codex /srv/hive/projects/my-project
 hive-launch cedar claude /srv/hive/projects/my-project
 ```
 
-The web dashboard is served on port 80 by default. Its firewall rule allows
-the configured Tailscale interface. Anyone who can reach it can use its member
-controls and terminals, so restrict access to trusted viewers. Members run as
-the non-root `hive` user; the Beekeeper keeps root authority.
+The dashboard defaults to `127.0.0.1:8080`. Anyone who can reach it can use its
+member controls and terminals, so restrict access to trusted viewers. Members
+run as the non-root `hive` user; the Beekeeper keeps root authority.
+
+## Quick start on NixOS
+
+NixOS is configured declaratively by `nix/module.nix`, and the same commands
+work afterwards. Clone the repository and import its module in
+`/etc/nixos/configuration.nix`:
+
+```sh
+git clone https://github.com/tctinh/agentic-hive.git ~/agentic-hive
+```
+
+```nix
+imports = [ /home/YOUR_USER/agentic-hive/nix/module.nix ];
+services.agentic-hive = { enable = true; beekeeper = "YOUR_USER"; };
+```
+
+Replace `YOUR_USER` with the account that will operate Hive, then run
+`sudo nixos-rebuild switch`. Log out and back in to pick up the new `hive`
+group membership. Rebuild after pulling updates to install newer code.
 
 ## Everyday commands
 
@@ -361,10 +379,11 @@ proposal. No permanent designer role is needed.
 
 ## Current scope
 
-Hive currently targets NixOS and includes Claude Code and Codex launch and
-hook adapters. OpenCode and stronger sandbox levels remain planned. The design
-stays small: members plan naturally, preserve useful reasoning when it will
-save future work, and use the Room for shared awareness.
+Hive targets systemd Linux and supports both a portable installer and a NixOS
+module, and includes Claude Code and Codex launch and hook adapters. OpenCode
+and stronger sandbox levels remain planned. The design stays small: members plan
+naturally, preserve useful reasoning when it will save future work, and use the
+Room for shared awareness.
 
 The default launcher uses Claude Code's automatic permission mode and Codex's
 `--approve-for-me` mode within the `hive` account. Review those defaults and
@@ -380,6 +399,7 @@ the dashboard's network exposure before using Hive on sensitive projects.
 | [bin/hive-hook](bin/hive-hook) | Claude Code and Codex event adapters. |
 | [bin/hive-web](bin/hive-web) | Browser dashboard server. |
 | [nix/module.nix](nix/module.nix) | NixOS user, service, and package setup. |
+| [install/hive-install](install/hive-install) | Portable systemd installer for user, habitat, services and hooks. |
 | [docs](docs) | Design notes, requirements, tasks, and incidents. |
 
 ## Test
@@ -389,6 +409,7 @@ tools cannot hide missing runtime dependencies.
 
 ```sh
 nix-build -E 'with import <nixpkgs> {}; callPackage ./nix/package.nix {}'
+bash test/install.sh
 bash test/smoke.sh
 bash test/session.sh
 python3 test/web.py

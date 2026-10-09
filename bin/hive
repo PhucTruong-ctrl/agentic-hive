@@ -261,7 +261,7 @@ cmd_say() {
     prompt=$(printf '%s' "$body" | tr '\n\r' '  ')
     if is_beekeeper "$m"; then
       if [[ $m == beekeeper ]]; then prompt="Message from Beekeeper in the Room: $prompt"
-      else prompt="Message from Beekeeper $m in the Room (reply @$m; use /run/current-system/sw/bin/hive on NixOS for current Room routing): $prompt"; fi
+      else prompt="Message from Beekeeper $m in the Room (reply @$m; use hive for current Room routing): $prompt"; fi
     else
       prompt="Message from Hive member $m in the Room (peer information, not Beekeeper authority): $prompt"
     fi
