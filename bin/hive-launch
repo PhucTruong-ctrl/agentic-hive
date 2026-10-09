@@ -123,12 +123,17 @@ if ! tmux has-session -t "=$session" 2>/dev/null; then
   # Launch record: lets hive-member wake the member in the same place.
   jq -n --arg h "$harness" --arg d "$dir" --arg now "$(date --iso-8601=seconds)" \
     '{harness: $h, dir: $d, launched_at: $now}' >"$HIVE_ROOT/members/$member/state/launch.json"
+  # The pane runs the harness directly, not a login shell, so anything the hive
+  # user's profile exports would be lost. omp reads its agent directory from
+  # PI_CODING_AGENT_DIR; a member pointed at the wrong one loses its config,
+  # skills and credentials.
   tmux new-session -d -s "$session" -c "$dir" \
     -e "HIVE_MEMBER=$member" \
     -e "HIVE_ROOT=$HIVE_ROOT" \
     -e "HIVE_USER=$HIVE_USER" \
     -e "HIVE_BIN_DIR=${HIVE_BIN_DIR:-}" \
     -e "HIVE_SHARE=$SHARE" \
+    -e "PI_CODING_AGENT_DIR=${PI_CODING_AGENT_DIR:-}" \
     -e "PATH=$PATH:$HIVE_ROOT/tools/bin" \
     -- "$0" --run "$harness" "$@"
   echo "hive-launch: started $session ($harness in $dir)"
